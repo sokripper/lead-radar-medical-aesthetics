@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react';
 
-type NavKey = 'overview' | 'screening' | 'leads' | 'conversations' | 'monitoring' | 'rules';
+type NavKey = 'workflow' | 'overview' | 'screening' | 'leads' | 'conversations' | 'monitoring' | 'rules';
 type Lead = {
   id: number;
   name: string;
@@ -20,12 +20,23 @@ type Lead = {
 };
 
 const navItems: { key: NavKey; label: string; icon: string; badge?: string }[] = [
+  { key: 'workflow', label: '任务工作台', icon: '→' },
   { key: 'overview', label: '工作总览', icon: '⌂' },
   { key: 'screening', label: '数据筛选', icon: '⌁' },
   { key: 'leads', label: '潜客池', icon: '◎', badge: '61' },
   { key: 'conversations', label: '会话中心', icon: '◫', badge: '5' },
   { key: 'monitoring', label: '监控任务', icon: '↻' },
   { key: 'rules', label: '规则设置', icon: '⚙' },
+];
+
+const workflowSteps = [
+  ['导入数据', '选择羚羊导出的 Excel'],
+  ['确认字段', '检查原帖与评论关联'],
+  ['执行筛选', '运行 A/B/C/D 评分'],
+  ['复核名单', '决定谁进入潜客池'],
+  ['核验账号', '匹配真实 account_id'],
+  ['审核话术', '确认首轮沟通内容'],
+  ['启动任务', '授权发送并开始监控'],
 ];
 
 const leads: Lead[] = [
@@ -100,7 +111,7 @@ const batches = [
 const reviewCards = leads.slice(0, 2);
 
 export default function Home() {
-  const [activeNav, setActiveNav] = useState<NavKey>('overview');
+  const [activeNav, setActiveNav] = useState<NavKey>('workflow');
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [showImport, setShowImport] = useState(false);
   const [filter, setFilter] = useState<'全部' | 'A' | 'B'>('全部');
@@ -109,6 +120,14 @@ export default function Home() {
   const [monitoring, setMonitoring] = useState(true);
   const [newReplies, setNewReplies] = useState(5);
   const [toast, setToast] = useState('');
+  const [workflowStep, setWorkflowStep] = useState(0);
+  const [workflowFile, setWorkflowFile] = useState('');
+  const [screeningState, setScreeningState] = useState<'idle' | 'running' | 'done'>('idle');
+  const [reviewSelection, setReviewSelection] = useState<number[]>([1, 2, 3]);
+  const [accountChecked, setAccountChecked] = useState(false);
+  const [messageSelection, setMessageSelection] = useState<number[]>([1, 2]);
+  const [permissionChecks, setPermissionChecks] = useState<string[]>([]);
+  const [taskStarted, setTaskStarted] = useState(false);
 
   const visibleLeads = useMemo(() => {
     return leads.filter((lead) => {
@@ -127,6 +146,19 @@ export default function Home() {
   function approveLead(id: number) {
     if (!approved.includes(id)) setApproved((items) => [...items, id]);
     notify('已通过人工审核，进入待发送队列');
+  }
+
+  function toggleNumber(items: number[], id: number, setter: (next: number[]) => void) {
+    setter(items.includes(id) ? items.filter((item) => item !== id) : [...items, id]);
+  }
+
+  function togglePermission(key: string) {
+    setPermissionChecks((items) => items.includes(key) ? items.filter((item) => item !== key) : [...items, key]);
+  }
+
+  function goToWorkflowStep(step: number) {
+    setWorkflowStep(step);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   function renderLeadTable(compact = false) {
@@ -161,6 +193,133 @@ export default function Home() {
     );
   }
 
+  function Workflow() {
+    let stepContent: React.ReactNode;
+
+    if (workflowStep === 0) {
+      stepContent = (
+        <section className="workflow-card">
+          <div className="workflow-card-head">
+            <span className="step-kicker">步骤 1 / 7</span>
+            <h2>先把本批数据导进来</h2>
+            <p>支持羚羊导出的 Excel、CSV。原始文件只读取，不会在系统里重复维护一份。</p>
+          </div>
+          <label className={`workflow-upload ${workflowFile ? 'has-file' : ''}`}>
+            <input type="file" accept=".xlsx,.xls,.csv" onChange={(event) => setWorkflowFile(event.target.files?.[0]?.name ?? '')} />
+            <span className="workflow-upload-icon">⇧</span>
+            {workflowFile ? <><strong>{workflowFile}</strong><small>文件已选择，可以开始解析</small></> : <><strong>点击选择文件，或拖到这里</strong><small>.xlsx / .xls / .csv，单文件不超过 50 MB</small></>}
+          </label>
+          <button className="demo-file-button" onClick={() => setWorkflowFile('医美social_media_20260803_to_20260804.xlsx')}>没有文件？使用本次演示数据</button>
+          <div className="operation-note"><span>i</span><div><strong>这一阶段只做结构检查</strong><p>系统会识别原帖、评论、作者 ID、doc_url 等字段，不会执行发送或账号操作。</p></div></div>
+          <div className="workflow-footer"><span>预计耗时：10–30 秒</span><button className="primary-button" disabled={!workflowFile} onClick={() => goToWorkflowStep(1)}>解析文件并继续 →</button></div>
+        </section>
+      );
+    } else if (workflowStep === 1) {
+      stepContent = (
+        <section className="workflow-card">
+          <div className="workflow-card-head"><span className="step-kicker">步骤 2 / 7</span><h2>确认系统识别的字段</h2><p>这一步决定后面能不能正确关联原帖、评论和评论作者。</p></div>
+          <div className="structure-summary"><div><strong>326</strong><small>数据行</small></div><div><strong>19</strong><small>识别字段</small></div><div><strong>1</strong><small>工作表</small></div><div><strong className="healthy">正常</strong><small>结构状态</small></div></div>
+          <div className="mapping-table">
+            <div className="mapping-head"><span>系统需要的字段</span><span>识别到的 Excel 列</span><span>示例值</span><span>状态</span></div>
+            {[
+              ['内容类型', 'data_type', '1 / 2', '已匹配'],
+              ['原帖关联地址', 'doc_url', 'xiaohongshu.com/…', '已匹配'],
+              ['评论作者 ID', 'src_author_id', '5f3•••82', '已匹配'],
+              ['正文 / 评论', 'content', '想问下恢复期…', '已匹配'],
+              ['标题', 'headline', '超声炮避坑…', '已匹配'],
+            ].map(([label, field, example, status]) => <div className="mapping-row" key={field}><strong>{label}</strong><select defaultValue={field}><option>{field}</option><option>暂不使用</option></select><code>{example}</code><span>✓ {status}</span></div>)}
+          </div>
+          <div className="association-check"><span>✓</span><div><strong>原帖关联检查通过</strong><p>共发现 84 条原帖，242 条评论；当前数据可以通过 doc_url 回溯到对应原帖。未发现评论层级字段，二级评论按原帖上下文处理。</p></div></div>
+          <div className="workflow-footer"><button className="back-button" onClick={() => goToWorkflowStep(0)}>← 返回</button><button className="primary-button" onClick={() => goToWorkflowStep(2)}>确认字段，设置筛选 →</button></div>
+        </section>
+      );
+    } else if (workflowStep === 2) {
+      stepContent = (
+        <section className="workflow-card">
+          <div className="workflow-card-head"><span className="step-kicker">步骤 3 / 7</span><h2>设置筛选目标并执行评分</h2><p>模型会同时读取原帖和评论，按照统一证据维度分为 A / B / C / D。</p></div>
+          <div className="screening-config">
+            <label><span>目标行业</span><select defaultValue="医美"><option>医美</option><option>口腔</option><option>大健康</option></select></label>
+            <label><span>重点项目</span><input defaultValue="抗衰、注射、皮肤、眼鼻整形" /></label>
+            <label><span>地区范围</span><select defaultValue="全国"><option>全国</option><option>指定城市</option></select></label>
+          </div>
+          <div className="class-definition-grid">
+            {[['A','高意向','项目明确，并出现预算、时间、机构推荐等决策信号'],['B','中高意向','需求明确，但还缺少地区、预算或决策时间'],['C','低意向','泛讨论、经验交流或仅有轻度兴趣'],['D','排除','广告、同行、非目标行业或无有效需求']].map(([grade,title,copy]) => <article key={grade}><span className={`grade grade-${grade.toLowerCase()}`}>{grade}</span><div><strong>{title}</strong><p>{copy}</p></div></article>)}
+          </div>
+          {screeningState === 'running' && <div className="screening-running"><span className="spinner"/><div><strong>正在读取上下文并评分…</strong><p>已处理 218 / 326 条，当前只生成结构化判断，不执行外部动作。</p></div><b>67%</b></div>}
+          {screeningState === 'done' && <div className="screening-result"><div><small>A 类</small><strong>24</strong></div><div><small>B 类</small><strong>37</strong></div><div><small>C 类</small><strong>183</strong></div><div><small>D 类</small><strong>82</strong></div><span>共提炼出 61 条可复核潜客</span></div>}
+          <div className="workflow-footer"><button className="back-button" onClick={() => goToWorkflowStep(1)}>← 返回</button>{screeningState !== 'done' ? <button className="primary-button" disabled={screeningState === 'running'} onClick={() => { setScreeningState('running'); window.setTimeout(() => { setScreeningState('done'); notify('326 条数据筛选完成'); }, 1300); }}>{screeningState === 'running' ? '筛选进行中…' : '开始筛选 326 条数据'}</button> : <button className="primary-button" onClick={() => goToWorkflowStep(3)}>查看并复核 A / B 名单 →</button>}</div>
+        </section>
+      );
+    } else if (workflowStep === 3) {
+      stepContent = (
+        <section className="workflow-card wide-card">
+          <div className="workflow-card-head"><span className="step-kicker">步骤 4 / 7</span><h2>复核进入潜客池的用户</h2><p>系统已提炼 61 条 A / B 记录。你可以查看证据、取消勾选，或打开详情修改判断。</p></div>
+          <div className="review-toolbar"><label><input type="checkbox" checked={reviewSelection.length === leads.length} onChange={() => setReviewSelection(reviewSelection.length === leads.length ? [] : leads.map((lead) => lead.id))}/> 全选当前页</label><div><span>已选择 <strong>{reviewSelection.length}</strong> / 61 条</span><button onClick={() => setReviewSelection([])}>清空选择</button></div></div>
+          <div className="workflow-review-list">
+            {leads.map((lead) => <article className={reviewSelection.includes(lead.id) ? 'selected' : ''} key={lead.id}><label><input type="checkbox" checked={reviewSelection.includes(lead.id)} onChange={() => toggleNumber(reviewSelection, lead.id, setReviewSelection)} /><span className={`avatar avatar-${lead.id}`}>{lead.name.slice(0,1)}</span></label><div className="review-identity"><strong>{lead.name}</strong><small>{lead.source} · {lead.location}</small></div><span className={`grade grade-${lead.grade.toLowerCase()}`}>{lead.grade}</span><div className="review-intent"><strong>{lead.intent}</strong><p>{lead.context}</p></div><div className="review-reason"><small>模型证据</small><p>{lead.evidence}</p></div><button onClick={() => setSelectedLead(lead)}>查看</button></article>)}
+          </div>
+          <div className="pagination-note">当前展示 4 条演示记录 · 实际任务共 61 条</div>
+          <div className="workflow-footer"><button className="back-button" onClick={() => goToWorkflowStep(2)}>← 返回筛选结果</button><button className="primary-button" disabled={reviewSelection.length === 0} onClick={() => goToWorkflowStep(4)}>确认名单，开始账号核验 →</button></div>
+        </section>
+      );
+    } else if (workflowStep === 4) {
+      stepContent = (
+        <section className="workflow-card">
+          <div className="workflow-card-head"><span className="step-kicker">步骤 5 / 7</span><h2>把作者 ID 核验成可沟通账号</h2><p>src_author_id 只代表数据里的作者标识，必须核验后才能作为真实 account_id 使用。</p></div>
+          <div className="identity-warning"><span>≠</span><p><strong>不要直接把 src_author_id 当成 account_id</strong>核验会结合平台、用户主页和来源内容，无法确认的记录进入人工队列。</p></div>
+          <div className="verification-table"><div className="verification-head"><span>潜客</span><span>src_author_id</span><span>核验结果</span><span>可信度</span></div>{leads.slice(0,3).map((lead,index) => <div className="verification-row" key={lead.id}><div><span className={`avatar avatar-${lead.id}`}>{lead.name.slice(0,1)}</span><strong>{lead.name}</strong></div><code>{lead.handle}</code>{accountChecked ? <strong className={index === 2 ? 'needs-manual' : 'verified-account'}>{index === 2 ? '需人工确认' : `xhs_${lead.id}•••${27 + lead.id}`}</strong> : <span className="pending-account">等待核验</span>}<span>{accountChecked ? (index === 2 ? '—' : `${96-index*3}%`) : '—'}</span></div>)}</div>
+          {accountChecked && <div className="verification-summary"><span>✓</span><div><strong>49 个账号自动核验成功</strong><p>12 个账号需要人工打开平台主页确认，未核验记录不会进入发送队列。</p></div><button onClick={() => notify('已打开人工核验队列')}>处理 12 条</button></div>}
+          <div className="workflow-footer"><button className="back-button" onClick={() => goToWorkflowStep(3)}>← 返回名单</button>{!accountChecked ? <button className="primary-button" onClick={() => { setAccountChecked(true); notify('账号批量核验完成'); }}>开始批量核验</button> : <button className="primary-button" onClick={() => goToWorkflowStep(5)}>使用已核验账号，生成话术 →</button>}</div>
+        </section>
+      );
+    } else if (workflowStep === 5) {
+      stepContent = (
+        <section className="workflow-card wide-card">
+          <div className="workflow-card-head"><span className="step-kicker">步骤 6 / 7</span><h2>逐条确认首轮沟通话术</h2><p>话术结合评论和原帖上下文生成。勾选表示审核通过，不勾选的用户不会发送。</p></div>
+          <div className="message-review-grid">{leads.slice(0,3).map((lead) => <article className={messageSelection.includes(lead.id) ? 'selected' : ''} key={lead.id}><header><div><span className={`avatar avatar-${lead.id}`}>{lead.name.slice(0,1)}</span><div><strong>{lead.name}</strong><small><span className={`grade mini grade-${lead.grade.toLowerCase()}`}>{lead.grade}</span>{lead.intent}</small></div></div><label><input type="checkbox" checked={messageSelection.includes(lead.id)} onChange={() => toggleNumber(messageSelection, lead.id, setMessageSelection)} />通过</label></header><blockquote>“{lead.context}”</blockquote><label className="message-editor"><span>拟发送内容</span><textarea defaultValue={lead.message}/></label><footer><button onClick={() => notify('已根据上下文重新生成一版')}>重新生成</button><span>{messageSelection.includes(lead.id) ? '✓ 已审核' : '暂不发送'}</span></footer></article>)}</div>
+          <div className="compliance-bar"><span>!</span><p>话术不能伪装成真实使用者，不能做疗效保证，也不能在用户拒绝后继续触达。当前设置为每条发送前人工确认。</p></div>
+          <div className="workflow-footer"><button className="back-button" onClick={() => goToWorkflowStep(4)}>← 返回账号核验</button><button className="primary-button" disabled={messageSelection.length === 0} onClick={() => goToWorkflowStep(6)}>确认 {messageSelection.length} 条话术并继续 →</button></div>
+        </section>
+      );
+    } else {
+      stepContent = taskStarted ? (
+        <section className="workflow-card success-card">
+          <span className="success-mark">✓</span><p className="eyebrow">任务已启动</p><h2>发送队列和回复监控已经开始</h2><p>本轮共纳入 {messageSelection.length} 个演示账号。系统会按计划执行，并在出现新回复时生成下一步建议。</p>
+          <div className="running-task"><div><span className="live-pulse"/><div><strong>医美获客实验 · 2026-08-27</strong><small>运行中 · 下一次检查约 12 分钟后</small></div></div><dl><div><dt>待发送</dt><dd>{messageSelection.length}</dd></div><div><dt>监控会话</dt><dd>{messageSelection.length}</dd></div><div><dt>新回复</dt><dd>0</dd></div><div><dt>需人工接管</dt><dd>0</dd></div></dl></div>
+          <div className="success-actions"><button className="secondary-button" onClick={() => { setWorkflowStep(0); setWorkflowFile(''); setTaskStarted(false); setScreeningState('idle'); }}>新建另一批任务</button><button className="primary-button" onClick={() => setActiveNav('monitoring')}>进入监控中心 →</button></div>
+        </section>
+      ) : (
+        <section className="workflow-card">
+          <div className="workflow-card-head"><span className="step-kicker">步骤 7 / 7</span><h2>确认授权并启动任务</h2><p>启动后系统只处理本次确认过的名单和话术；遇到登录、验证码、风控或拒绝会立即停下。</p></div>
+          <div className="launch-summary"><div><small>数据批次</small><strong>{workflowFile || '演示数据.xlsx'}</strong></div><div><small>进入发送队列</small><strong>{messageSelection.length} 条</strong></div><div><small>监控间隔</small><select defaultValue="15"><option value="15">每 15 分钟</option><option value="30">每 30 分钟</option><option value="60">每 60 分钟</option></select></div><div><small>无新回复时</small><strong>不调用模型</strong></div></div>
+          <div className="permission-list">
+            {[['account','我确认使用的是已授权的业务账号'],['content','我已经审核本轮发送名单和话术'],['risk','我了解验证码、风控和用户拒绝会触发人工接管']].map(([key,label]) => <label className={permissionChecks.includes(key) ? 'checked' : ''} key={key}><input type="checkbox" checked={permissionChecks.includes(key)} onChange={() => togglePermission(key)} /><span>{permissionChecks.includes(key) ? '✓' : ''}</span><p>{label}</p></label>)}
+          </div>
+          <div className="launch-boundary"><strong>系统可以做</strong><p>按审核队列执行、定时检查新回复、生成建议、记录状态。</p><strong>系统不会做</strong><p>绕过平台风控、批量养号、伪装真实体验、未经确认持续群发。</p></div>
+          <div className="workflow-footer"><button className="back-button" onClick={() => goToWorkflowStep(5)}>← 返回话术审核</button><button className="primary-button" disabled={permissionChecks.length < 3} onClick={() => { setTaskStarted(true); setMonitoring(true); notify('任务已创建并启动监控'); }}>创建任务并启动监控</button></div>
+        </section>
+      );
+    }
+
+    return (
+      <>
+        <section className="workflow-hero">
+          <div><span className="demo-mode">交互原型 · 演示模式</span><p className="eyebrow">从数据到会话的操作入口</p><h1>新建一批潜客运营任务</h1><p>跟着步骤完成，系统不会在你确认前执行任何外部动作。</p></div>
+          <div className="task-meta"><small>当前任务</small><strong>TASK-20260827-01</strong><span>草稿自动保存</span></div>
+        </section>
+        <div className="workflow-layout">
+          <aside className="workflow-steps">
+            <div className="workflow-steps-head"><strong>任务流程</strong><span>{Math.round(((workflowStep + (taskStarted ? 1 : 0)) / workflowSteps.length) * 100)}%</span></div>
+            <div className="progress-line"><i style={{ width: `${Math.round(((workflowStep + (taskStarted ? 1 : 0)) / workflowSteps.length) * 100)}%` }}/></div>
+            {workflowSteps.map(([title, detail], index) => <button key={title} className={`${index === workflowStep ? 'active' : ''} ${index < workflowStep || taskStarted ? 'done' : ''}`} disabled={index > workflowStep} onClick={() => index <= workflowStep && goToWorkflowStep(index)}><span>{index < workflowStep || taskStarted ? '✓' : index + 1}</span><div><strong>{title}</strong><small>{detail}</small></div></button>)}
+            <div className="workflow-help"><span>?</span><div><strong>不确定下一步？</strong><p>每一步都可以先保存退出，不会丢失当前选择。</p></div></div>
+          </aside>
+          <div className="workflow-main">{stepContent}</div>
+        </div>
+      </>
+    );
+  }
+
   function Overview() {
     return (
       <>
@@ -172,7 +331,7 @@ export default function Home() {
           </div>
           <div className="hero-actions">
             <button className="secondary-button" onClick={() => setActiveNav('screening')}>查看本批结果</button>
-            <button className="primary-button" onClick={() => setShowImport(true)}>＋ 导入新批次</button>
+            <button className="primary-button" onClick={() => setActiveNav('workflow')}>＋ 新建获客任务</button>
           </div>
         </section>
 
@@ -282,7 +441,7 @@ export default function Home() {
     );
   }
 
-  const views: Record<NavKey, () => React.ReactNode> = { overview: Overview, screening: Screening, leads: LeadsView, conversations: Conversations, monitoring: Monitoring, rules: Rules };
+  const views: Record<NavKey, () => React.ReactNode> = { workflow: Workflow, overview: Overview, screening: Screening, leads: LeadsView, conversations: Conversations, monitoring: Monitoring, rules: Rules };
   const ActiveView = views[activeNav];
 
   return (
