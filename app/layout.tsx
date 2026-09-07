@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import './globals.css';
+import './console.css';
 
 export const metadata: Metadata = {
   title: '线索雷达 · 潜客运营台',
