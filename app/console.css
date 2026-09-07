@@ -296,3 +296,12 @@ input[type=checkbox]:disabled { cursor:not-allowed; opacity:.4; }
   .draft-resume>div { min-width:190px; }
 }
 @media (prefers-reduced-motion:reduce) { *,*:before,*:after { animation:none!important; transition:none!important; } }
+.history-filters { display:flex; flex-wrap:wrap; gap:14px; padding:16px 24px; border-top:1px solid #e9edf5; }
+.history-filters label { display:grid; gap:6px; font-size:13px; color:#64748b; min-width:150px; flex:1; }
+.history-filters select { background:white; padding:9px; border:1px solid #dce2ed; border-radius:8px; color:#243047; width:100%; }
+.result-controls { flex-wrap:wrap; gap:8px; margin:12px 0; }
+.result-controls .button { font-size:12px; padding:7px 9px; }
+.grade-待判断 { background:#fff5db; color:#91640d; }
+.result-toolbar>input { border:1px solid #dce2ed; border-radius:8px; padding:9px 12px; font:inherit; font-size:13px; min-width:220px; }
+.checkbox-label { display:flex; align-items:center; gap:8px; margin:10px 0; font-size:14px; }
+.settings-section p { line-height:1.65; }

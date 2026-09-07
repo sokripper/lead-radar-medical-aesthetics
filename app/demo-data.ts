@@ -1,5 +1,7 @@
 import type { Prospect as Lead } from './operations-state';
 export const demoLeads: Lead[] = [
+  { id: 7, name: '提问样本', handle: 'demo_07', grade: '待判断', score: 0, intent: '上下文不足', context: '这个可以吗？', evidence: '缺少所指对象与父评论，无法判断需求', location: '未知', status: '', source: '小红书评论', accountId: '', message: '' },
+  { id: 8, name: '异常样本', handle: 'demo_08', grade: '待判断', score: 0, intent: '内容未读出', context: '', evidence: '该条处理失败，尚未形成分类结果', location: '未知', status: '', source: '抖音评论', accountId: '', message: '' },
   { id: 5, name: '晚风散步', handle: 'demo_05', grade: 'C', score: 35, intent: '日常互动', context: '谢谢分享，先收藏啦。', evidence: '仅收藏互动，未表达个人项目需求', location: '未知', status: '', source: '小红书评论', accountId: '', message: '' },
   { id: 6, name: '项目推广示例', handle: 'demo_06', grade: 'D', score: 12, intent: '推广信息', context: '本月活动，欢迎咨询合作。', evidence: '商业推广内容，不是消费者需求', location: '未知', status: '', source: '抖音评论', accountId: '', message: '' },
   {
@@ -15,7 +17,7 @@ export const demoLeads: Lead[] = [
     status: '待审核话术',
     source: '小红书评论',
     accountId: '待核验',
-    message: '看到你在问超声炮，我前阵子也集中做过一轮功课。你更在意下颌线的效果，还是恢复期呀？我可以把我当时对比时比较有用的几点发你。',
+    message: '',
   },
   {
     id: 2,
@@ -30,7 +32,7 @@ export const demoLeads: Lead[] = [
     status: '账号已核验',
     source: '小红书评论',
     accountId: 'xhs_6•••27',
-    message: '刚好看到你在纠结法令纹材料，我之前也担心填完会显假。你现在主要是静态纹明显，还是笑起来更明显？不同情况关注点还挺不一样的。',
+    message: '',
   },
   {
     id: 3,
@@ -45,7 +47,7 @@ export const demoLeads: Lead[] = [
     status: '待账号核验',
     source: '小红书评论',
     accountId: '待核验',
-    message: '你问的恢复期我也关注过，每个人肿胀差异挺大的。你是已经约了面诊，还是还在前期了解呀？',
+    message: '',
   },
   {
     id: 4,
@@ -60,6 +62,6 @@ export const demoLeads: Lead[] = [
     status: '暂缓跟进',
     source: '抖音评论',
     accountId: 'dy_2•••04',
-    message: '刷到你在问皮秒去痘印，我之前也查过一阵。痘印颜色和类型不同，适合的方案好像差别挺大，你的是偏红还是偏褐色呀？',
+    message: '',
   },
 ];

@@ -1,0 +1,13 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {emptyMonitoring,monitorError,monitorStatus,canGenerate,adjustGrade,transitionSend,contactStatus,exportRows,csvCell} from '../app/operations-state.ts';
+test('monitoring is off with no implicit interval',()=>{assert.equal(emptyMonitoring().enabled,false);assert.equal(emptyMonitoring().interval,'');assert.equal(monitorError(emptyMonitoring()),'');});
+test('enabled monitoring requires an integer interval and future deadline',()=>{const m={...emptyMonitoring(),enabled:true};assert.ok(monitorError(m));m.interval='15';assert.ok(monitorError(m));m.deadline='2099-01-01T12:00';assert.equal(monitorError(m),'');m.interval='0.5';assert.ok(monitorError(m));});
+test('monitoring expiry overrides pause and never auto extends',()=>{const m={...emptyMonitoring(),enabled:true,paused:true,deadline:'2000-01-01'};assert.equal(monitorStatus(m),'已到期');m.ended=true;assert.equal(monitorStatus(m),'已结束');});
+test('formal identity cannot use empty or demo identity',()=>{assert.equal(canGenerate('formal','',true),false);assert.equal(canGenerate('formal','咨询团队（示例）',true),false);assert.equal(canGenerate('formal','某机构',false),false);assert.equal(canGenerate('formal','某机构',true),true);assert.equal(canGenerate('demo','',false),true);});
+test('grade changes require reason and retain previous conclusion',()=>{assert.throws(()=>adjustGrade('A','B',' '));const r=adjustGrade('A','B','需求尚不明确');assert.equal(r.from,'A');assert.equal(r.to,'B');assert.ok(r.time);assert.ok(r.actor);});
+test('unknown results cannot be retried',()=>{assert.equal(transitionSend('结果待核实','retry'),'结果待核实');assert.equal(transitionSend('结果待核实','verified-failure'),'发送失败');assert.equal(transitionSend('发送失败','retry'),'待执行');});
+test('success cannot be retried or canceled retroactively',()=>{assert.equal(transitionSend('发送成功','retry'),'发送成功');assert.equal(transitionSend('发送成功','cancel'),'发送成功');});
+test('submission is not success; cancellation returns to uncontacted',()=>{assert.equal(contactStatus(['待执行']),'待执行');assert.equal(contactStatus(['发送成功']),'已联系');assert.equal(contactStatus(['发送失败']),'发送失败');assert.equal(contactStatus(['已取消']),'未联系');});
+test('export scopes do not confuse selected with visible rows',()=>{const rows=[{id:1},{id:2},{id:3}];assert.deepEqual(exportRows('selected',rows,[2],[rows[0]]),[{id:2}]);assert.deepEqual(exportRows('filtered',rows,[2],[rows[0]]),[{id:1}]);assert.deepEqual(exportRows('selected',rows,[],rows),[]);});
+test('CSV escapes quotation and spreadsheet formulas',()=>{assert.equal(csvCell('a"b'),'"a""b"');assert.equal(csvCell('=1+1'),'"\'=1+1"');});

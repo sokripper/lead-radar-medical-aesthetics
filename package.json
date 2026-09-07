@@ -6,6 +6,8 @@
     "node": ">=22.13.0"
   },
   "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "test:browser": "node tests/browser-smoke.mjs",
     "dev": "vinext dev",
     "build": "vinext build",
     "build:pages": "GITHUB_PAGES=true next build",
