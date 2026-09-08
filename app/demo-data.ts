@@ -1,9 +1,9 @@
 import type { Prospect as Lead } from './operations-state';
 export const demoLeads: Lead[] = [
   { id: 7, name: '提问样本', handle: 'demo_07', grade: '待判断', score: 0, intent: '上下文不足', context: '这个可以吗？', evidence: '缺少所指对象与父评论，无法判断需求', location: '未知', status: '', source: '小红书评论', accountId: '', message: '' },
-  { id: 8, name: '异常样本', handle: 'demo_08', grade: '待判断', score: 0, intent: '内容未读出', context: '', evidence: '该条处理失败，尚未形成分类结果', location: '未知', status: '', source: '抖音评论', accountId: '', message: '' },
+  { id: 8, name: '异常样本', handle: 'demo_08', grade: '待判断', score: 0, intent: '内容未读出', context: '', evidence: '该条处理失败，尚未形成分类结果', location: '未知', status: '', source: '小红书评论', accountId: '', message: '' },
   { id: 5, name: '晚风散步', handle: 'demo_05', grade: 'C', score: 35, intent: '日常互动', context: '谢谢分享，先收藏啦。', evidence: '仅收藏互动，未表达个人项目需求', location: '未知', status: '', source: '小红书评论', accountId: '', message: '' },
-  { id: 6, name: '项目推广示例', handle: 'demo_06', grade: 'D', score: 12, intent: '推广信息', context: '本月活动，欢迎咨询合作。', evidence: '商业推广内容，不是消费者需求', location: '未知', status: '', source: '抖音评论', accountId: '', message: '' },
+  { id: 6, name: '项目推广示例', handle: 'demo_06', grade: 'D', score: 12, intent: '推广信息', context: '本月活动，欢迎咨询合作。', evidence: '商业推广内容，不是消费者需求', location: '未知', status: '', source: '小红书评论', accountId: '', message: '' },
   {
     id: 1,
     name: '小满今天早睡',
@@ -23,7 +23,7 @@ export const demoLeads: Lead[] = [
     id: 2,
     name: '养乐多不要冰',
     handle: 'src_b2•••41',
-    grade: 'A',
+    grade: 'B',
     score: 88,
     intent: '法令纹填充',
     context: '法令纹填充到底选玻尿酸还是再生材料？预算一万左右，怕做完很假。',
@@ -60,8 +60,8 @@ export const demoLeads: Lead[] = [
     evidence: '痛点明确 + 正在比较，但购买信号较弱',
     location: '南京',
     status: '暂缓跟进',
-    source: '抖音评论',
-    accountId: 'dy_2•••04',
+    source: '小红书评论',
+    accountId: 'xhs_demo_04',
     message: '',
   },
 ];

@@ -42,17 +42,17 @@ test('final queue uses current edited message text without an extra per-message 
   drafts[1] = 'later change';
   assert.deepEqual(snapshot, {1:'edited by customer'});
 });
-test('each platform requires its own sender, while other ready platforms continue', () => {
-  const people=[{id:1,source:'小红书评论'},{id:4,source:'抖音评论'}];
+test('only supported source records can enter a task', () => {
+  const people=[{id:1,source:'小红书评论'},{id:4,source:'未支持渠道评论'}];
   const queue={ids:[1,4],blocked:[],included:[1,4],drafts:{1:'hello',4:'hello'}};
-  assert.deepEqual(readyRecipients(people,queue,{1:'A',4:'B'},[],{'小红书':true,'抖音':false}).map(x=>x.id),[1]);
+  assert.deepEqual(readyRecipients(people,queue,{1:'A',4:'B'},[],{'小红书':true}).map(x=>x.id),[1]);
 });
 test('current classification, exclusions, empty drafts and historical sends all gate sending', () => {
   const people=[1,2,3,4,5,6].map(id=>({id,source:'小红书评论'}));
   const queue={ids:[1,2,3,4,5,6],blocked:[3],included:[1,2,3,4,5,6],drafts:{1:'hello',2:'hello',3:'hello',4:' ',5:'hello',6:'hello'}};
-  assert.deepEqual(readyRecipients(people,queue,{1:'A',2:'A',3:'B',4:'B',5:'C',6:'D'},[2],{'小红书':true,'抖音':true}).map(x=>x.id),[1]);
+  assert.deepEqual(readyRecipients(people,queue,{1:'A',2:'A',3:'B',4:'B',5:'C',6:'D'},[2],{'小红书':true}).map(x=>x.id),[1]);
 });
 test('an empty initial workspace has no selectable or sendable fixture data', () => {
   assert.deepEqual(prepareDemoRecipients([1,2],[],[]).candidates,[]);
-  assert.deepEqual(readyRecipients([{id:1,source:'小红书评论'}],{ids:[],blocked:[],included:[],drafts:{}},{1:'A'},[],{'小红书':true,'抖音':true}),[]);
+  assert.deepEqual(readyRecipients([{id:1,source:'小红书评论'}],{ids:[],blocked:[],included:[],drafts:{}},{1:'A'},[],{'小红书':true}),[]);
 });
