@@ -68,7 +68,7 @@ function conversationAngle(lead: Context) {
     };
   }
   return {
-    question: `你留言提到的${lead.intent || "那个项目"}，最近还在看吗？`,
+    question: "你之前问的那个项目，最近还在看吗？",
     followup: "可以呀，你想先聊哪块？",
   };
 }

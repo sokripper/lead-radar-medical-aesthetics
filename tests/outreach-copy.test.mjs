@@ -45,6 +45,11 @@ test('neutral salutation is available and survives restoring saved settings',()=
   assert.doesNotMatch(openingCopy(lead(1),p),/姐妹/);
   assert.equal(restoreOutreachProfile(undefined).greeting,'哈喽姐妹');
 });
+test('fallback wording does not expose internal intent labels',()=>{
+  for(const intent of ['上下文不足','内容未读出','日常互动']){
+    assert.ok(!openingCopy({intent,context:'',location:'未知'},emptyOutreachProfile()).includes(intent));
+  }
+});
 test('only confirmed and relevant experience is copied without invented outcomes',()=>{
   const profile={...emptyOutreachProfile(),project:'超声炮',experience:'我做过超声炮，当时先对比了几家的面诊安排。',experienceConfirmed:true};
   assert.equal(matchingExperience(lead(1),profile),profile.experience);
