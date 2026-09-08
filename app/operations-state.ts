@@ -97,9 +97,28 @@ export function prepareDemoRecipients(ids: number[], pool: number[], contacted: 
 export function readyRecipients<T extends { id: number; source: string }>(
   leads: T[], queue: { ids:number[]; blocked:number[]; included:number[]; drafts:Record<number,string> },
   grades: Record<number,Prospect['grade']>, contacted: number[], accounts: Record<'小红书',boolean>,
+  unready: number[] = [],
 ) {
   return leads.filter((lead) => queue.ids.includes(lead.id) && !queue.blocked.includes(lead.id)
     && queue.included.includes(lead.id) && ['A','B'].includes(grades[lead.id])
     && !contacted.includes(lead.id) && lead.source.includes('小红书') && accounts['小红书']
-    && Boolean(queue.drafts[lead.id]?.trim()));
+    && !unready.includes(lead.id) && Boolean(queue.drafts[lead.id]?.trim()));
+}
+
+export function removeSubmitted<T extends {ids:number[];blocked:number[];included:number[];drafts:Record<number,string>;edited:number[];copyKeys?:Record<number,string>}>(queue:T, submitted:number[]):T {
+  const keep=(id:number)=>!submitted.includes(id);
+  return {...queue,ids:queue.ids.filter(keep),blocked:queue.blocked.filter(keep),included:queue.included.filter(keep),edited:queue.edited.filter(keep),
+    drafts:Object.fromEntries(Object.entries(queue.drafts).filter(([id])=>keep(Number(id)))),
+    copyKeys:Object.fromEntries(Object.entries(queue.copyKeys||{}).filter(([id])=>keep(Number(id))))};
+}
+
+export function mergePreparedQueue<T extends {ids:number[];blocked:number[];included:number[];drafts:Record<number,string>;edited:number[];copyKeys?:Record<number,string>}>(queue:T, prepared:{candidates:number[];blocked:number[];matched:number[]}, generated:Record<number,string>, key:string):T {
+  const fresh = Object.entries(generated).filter(([id,text]) => prepared.matched.includes(Number(id)) && queue.drafts[Number(id)] === undefined && text.trim());
+  return {...queue,
+    ids:[...new Set([...queue.ids,...prepared.candidates])],
+    blocked:[...new Set([...queue.blocked.filter(id=>!prepared.candidates.includes(id)),...prepared.blocked])],
+    included:prepared.matched,
+    drafts:{...queue.drafts,...Object.fromEntries(fresh)},
+    copyKeys:{...queue.copyKeys,...Object.fromEntries(fresh.map(([id])=>[id,key]))},
+  };
 }

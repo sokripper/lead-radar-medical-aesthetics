@@ -14,6 +14,11 @@ import {
   restoreOutreachProfile,
   openingCopy,
   followupCopy,
+  openingTemplates,
+  approachLabels,
+  projectNames,
+  outreachIssue,
+  outreachKey,
 } from "./outreach-copy";
 import { RuleSummary, RuleFields } from "./RuleFields";
 import {
@@ -45,6 +50,9 @@ import {
   exportRows,
   csvCell,
   prepareDemoRecipients,
+  readyRecipients,
+  removeSubmitted,
+  mergePreparedQueue,
 } from "./operations-state";
 
 type View = "screening" | "leads" | "workflow";
@@ -62,6 +70,7 @@ type Queue = {
   included: number[];
   drafts: Record<number, string>;
   edited: number[];
+  copyKeys?: Record<number, string>;
 };
 type Task = {
   id: number;
@@ -372,17 +381,15 @@ export default function Operations({
     (id) => rows.some((l) => l.id === id) && available(id),
   );
   const identityOK = canGenerate("formal", w.identity, w.attested);
-  const ready = leads.filter(
-    (l) =>
-      w.sender === "xhs" &&
-      identityOK &&
-      w.queue.ids.includes(l.id) &&
-      w.queue.included.includes(l.id) &&
-      !w.queue.blocked.includes(l.id) &&
-      available(l.id) &&
-      w.accounts[platform(l)] === "正常" &&
-      w.queue.drafts[l.id]?.trim(),
-  );
+  function copyIssue(l: Prospect) {
+    return outreachIssue(l, w.outreach) ||
+      (w.queue.drafts[l.id] !== undefined && w.queue.copyKeys?.[l.id] !== outreachKey(w.outreach)
+        ? "话术已更新，请重新生成；原编辑已保留" : "");
+  }
+  const copyPending = leads.filter(l => w.queue.ids.includes(l.id) && !w.queue.blocked.includes(l.id) && copyIssue(l));
+  const ready = identityOK && w.sender === "xhs"
+    ? readyRecipients(leads, w.queue, w.grades, occupied, { 小红书: w.accounts.小红书 === "正常" }, copyPending.map(l => l.id)).filter(l => available(l.id))
+    : [];
   const detailLead = leads.find((l) => l.id === detail);
   const task = w.tasks.find((t) => t.id === convo?.task);
   const person = leads.find((l) => l.id === convo?.lead);
@@ -464,20 +471,7 @@ export default function Operations({
     const p = prepareDemoRecipients(selected, pool, occupied);
     submitting.current = false;
     patch({
-      queue: {
-        ...w.queue,
-        ids: p.candidates,
-        blocked: p.blocked,
-        included: p.matched,
-        drafts: {
-          ...w.queue.drafts,
-          ...Object.fromEntries(
-            leads
-              .filter((l) => p.matched.includes(l.id))
-              .map((l) => [l.id, w.queue.drafts[l.id] || message(l)]),
-          ),
-        },
-      },
+      queue: mergePreparedQueue(w.queue, p, Object.fromEntries(leads.filter(l => p.matched.includes(l.id)).map(l => [l.id, message(l)])), outreachKey(w.outreach)),
     });
     setReview(true);
   }
@@ -512,7 +506,7 @@ export default function Operations({
           ],
         },
       ],
-      queue: emptyQueue(),
+      queue: removeSubmitted(old.queue, ids),
       monitor: emptyMonitoring(),
       selected: [],
     }));
@@ -791,17 +785,34 @@ export default function Operations({
   }
   function regenerateOne(id: number) {
     if (!identityOK) return;
+    const lead = leads.find(l => l.id === id);
+    if (!lead) return;
+    const error = outreachIssue(lead, w.outreach);
+    if (error) { setNotice(error); setRegenerate(null); openSettings(true); return; }
     patch({
       queue: {
         ...w.queue,
         drafts: {
           ...w.queue.drafts,
-          [id]: message(leads.find((l) => l.id === id)!),
+          [id]: message(lead),
         },
+        copyKeys: { ...w.queue.copyKeys, [id]: outreachKey(w.outreach) },
         edited: w.queue.edited.filter((i) => i !== id),
       },
     });
     setRegenerate(null);
+  }
+  function regenerateBatch() {
+    if (!identityOK) return;
+    const candidates = leads.filter(l => w.queue.included.includes(l.id) && !w.queue.blocked.includes(l.id) && available(l.id) && !outreachIssue(l, w.outreach));
+    if (!candidates.length) { setRegenerate(null); setNotice("请先补充本批项目和话术素材"); openSettings(true); return; }
+    patch({ queue: { ...w.queue,
+      drafts: { ...w.queue.drafts, ...Object.fromEntries(candidates.map(l => [l.id, message(l)])) },
+      copyKeys: { ...w.queue.copyKeys, ...Object.fromEntries(candidates.map(l => [l.id, outreachKey(w.outreach)])) },
+      edited: w.queue.edited.filter(id => !candidates.some(l => l.id === id)),
+    } });
+    setRegenerate(null);
+    setNotice(`已按“${approachLabels[w.outreach.approach]}”重新生成 ${candidates.length} 条；其他草稿保留。`);
   }
   function openRules() {
     setRuleDraft({ ...w.rules, grades: { ...w.rules.grades } });
@@ -1370,6 +1381,8 @@ export default function Operations({
             <div className="selection-bar">
               <div>
                 <strong>{selected.length} 位用户已选择</strong>
+                <span className="field-hint">批量话术：{approachLabels[w.outreach.approach]}</span>
+                <button className="button text" onClick={() => openSettings(false)}>设置批量话术</button>
                 <button
                   className="button text"
                   onClick={() => patch({ selected: [] })}
@@ -1789,9 +1802,9 @@ export default function Operations({
         </section>
         <details
           className="settings-section signature-details"
-          open={!identityOK}
+          open={!identityOK || !w.outreach.experienceConfirmed}
         >
-          <summary>沟通署名与体验素材</summary>
+          <summary>批量话术与真实素材</summary>
           <p>
             请填写实际对外身份并确认。当前环境只使用虚构名单模拟，不发送真实私信。
           </p>
@@ -1834,24 +1847,42 @@ export default function Operations({
             </select>
           </label>
           <p className="field-hint">按沟通对象选择；不确定“姐妹”是否适用时用“哈喽”，不根据医美需求判断性别。</p>
+          <fieldset className="settings-section">
+            <legend>批量开场方式</legend>
+            {(["experience", "cooperation"] as const).map(approach => (
+              <label className="checkbox-label" key={approach}>
+                <input type="radio" name="outreach-approach" value={approach}
+                  checked={w.outreach.approach === approach}
+                  onChange={() => patch({ outreach: { ...w.outreach, approach, experience: openingTemplates[approach], experienceConfirmed: false } })}
+                />
+                <span><strong>{approachLabels[approach]}</strong><small className="field-hint">{w.outreach.greeting}～{openingTemplates[approach]}</small></span>
+              </label>
+            ))}
+            <button className="button text" onClick={() => patch({ outreach: { ...w.outreach, experience: openingTemplates[w.outreach.approach], experienceConfirmed: false } })}>使用所选标准话术</button>
+          </fieldset>
           <label className="field">
-            体验对应项目（可选）
+            可使用这套话术的项目
             <input
               aria-label="体验对应项目"
-              placeholder="填写实际做过的项目名称"
+              placeholder="支持多个项目，用顿号或逗号分隔"
               value={w.outreach.project}
               onChange={(e) => patch({ outreach: {
                 ...w.outreach, project: e.target.value, experienceConfirmed: false,
               } })}
             />
           </label>
+          <button className="button text" disabled={!selected.length && !w.queue.included.length} onClick={() => {
+            const ids = selected.length ? selected : w.queue.included;
+            const projects = [...new Set(leads.filter(l => ids.includes(l.id)).map(l => projectNames(l.intent)[0]).filter(Boolean))];
+            patch({ outreach: { ...w.outreach, project: projects.join("、"), experienceConfirmed: false } });
+          }}>填入本次名单的项目，供核对</button>
           <label className="field">
-            真实经历与推荐话术（可选）
+            本批使用的话术
             <textarea
               aria-label="真实体验素材"
               rows={3}
               maxLength={240}
-              placeholder="填写你们确认过的原话，可直接包含“需要的话发你看看”等推荐句。"
+              placeholder="{项目} 会替换成每位用户对应的已确认项目，也可修改原话。"
               value={w.outreach.experience}
               onChange={(e) => patch({ outreach: {
                 ...w.outreach, experience: e.target.value, experienceConfirmed: false,
@@ -1868,10 +1899,12 @@ export default function Operations({
                 ...w.outreach, experienceConfirmed: e.target.checked,
               } })}
             />
-            确认是发送者本人的真实经历，并同意用于沟通
+            {w.outreach.approach === "cooperation"
+              ? "确认上述项目均有本人体验、可推荐机构及对应合作关系，同意用于本批话术"
+              : "确认上述项目均有本人体验及可推荐机构，同意用于本批话术"}
           </label>
           <p className="field-hint">
-            已确认且项目匹配时，按“打招呼 → 真实经历 → 按需推荐”生成；无对应素材时保留问题开场。修改素材后需重新确认。
+            一次配置可用于多位用户。仅替换各自对应的项目；缺少对应素材的用户单独待补充，其余继续生成，不切换成提问开场。
           </p>
           <label className="field">
             合作关系说明（如有）
@@ -1913,6 +1946,14 @@ export default function Operations({
           </>
         }
       >
+        <section className="settings-section">
+          <h3>本批话术：{approachLabels[w.outreach.approach]}</h3>
+          <p>{w.outreach.greeting}～{w.outreach.experience}</p>
+          <p className="field-hint">下方正文按各自项目生成。设置变化不会覆盖旧草稿，可确认后统一重新生成。</p>
+          <button className="button secondary" onClick={() => openSettings(true)}>设置批量话术</button>
+          <button className="button text" disabled={!identityOK || !w.queue.included.length} onClick={() => setRegenerate(-1)}>按当前话术重新生成本批</button>
+          {copyPending.length > 0 && <p className="notice">{copyPending.length} 位待补充素材或更新正文，其余用户可继续确认。</p>}
+        </section>
         <section className="settings-section">
           <h3>发送账号</h3>
           <label className="field">
@@ -2051,23 +2092,26 @@ export default function Operations({
               </header>
               <p>联系依据：{l.evidence}</p>
               <blockquote>{l.context}</blockquote>
+              {copyIssue(l) && <p className="notice">{copyIssue(l)} <button className="button text" onClick={() => openSettings(true)}>补充话术素材</button></p>}
               <label className="field">
                 拟发送内容
                 <textarea
                   aria-label={`${l.name}的拟发送内容`}
                   value={w.queue.drafts[l.id] || ""}
+                  placeholder="素材齐全后按所选体验推荐话术生成"
                   onChange={(e) =>
                     patch({
                       queue: {
                         ...w.queue,
                         drafts: { ...w.queue.drafts, [l.id]: e.target.value },
+                        copyKeys: { ...w.queue.copyKeys, [l.id]: outreachIssue(l, w.outreach) ? (w.queue.copyKeys?.[l.id] || "") : outreachKey(w.outreach) },
                         edited: [...new Set([...w.queue.edited, l.id])],
                       },
                     })
                   }
                 />
               </label>
-              <p className="field-hint">体验分享式建议 · 请核对真实经历和推广说明，确认后再发送。</p>
+              <p className="field-hint">{approachLabels[w.outreach.approach]} · 核对对应项目、经历和正文后确认发送。</p>
               <div className="review-tools">
                 <span>{`小红书 · ${w.accounts.小红书}`}</span>
                 {w.accounts.小红书 !== "正常" && (
@@ -2573,14 +2617,14 @@ export default function Operations({
             </button>
             <button
               className="button primary"
-              onClick={() => regenerate !== null && regenerateOne(regenerate)}
+              onClick={() => regenerate === -1 ? regenerateBatch() : regenerate !== null && regenerateOne(regenerate)}
             >
-              确认覆盖本条
+              {regenerate === -1 ? "确认按本批话术重新生成" : "确认覆盖本条"}
             </button>
           </>
         }
       >
-        <p>重新生成将覆盖这条手工编辑，其他正文保持不变。</p>
+        <p>{regenerate === -1 ? "只更新本次勾选且素材齐全的用户，包含这些用户的手工编辑；待补充、未勾选及已发送内容保留。取消不会修改任何正文。" : "重新生成将覆盖这条手工编辑，其他正文保持不变。"}</p>
       </Sheet>
       <Sheet
         open={exportOpen}
