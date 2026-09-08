@@ -8,8 +8,10 @@ export type OutreachProfile = {
   disclosure: string;
 };
 
-const defaultDisclosure = "先说一声，我这边也做项目推广。";
-const previousDisclosure = "也先跟你说明下，这次联系有推广推荐的目的。";
+const retiredDisclosureTemplates = new Set([
+  "先说一声，我这边也做项目推广。",
+  "也先跟你说明下，这次联系有推广推荐的目的。",
+]);
 export const emptyOutreachProfile = (): OutreachProfile => ({
   greeting: "哈喽姐妹",
   project: "",
@@ -77,11 +79,13 @@ function conversationAngle(lead: Context) {
 export function openingCopy(lead: Context, profile: OutreachProfile) {
   const angle = conversationAngle(lead);
   const experience = matchingExperience(lead, profile);
+  const suppliedDisclosure = profile.disclosure.trim();
+  const disclosure = retiredDisclosureTemplates.has(suppliedDisclosure) ? "" : suppliedDisclosure;
+  const hasOffer = /需要的话|发你|给你推荐|推荐给你|分享给你/.test(`${experience}${disclosure}`);
   return [
     `${profile.greeting}～${experience || angle.question}`,
-    experience ? angle.question : "",
-    defaultDisclosure,
-    ![defaultDisclosure, previousDisclosure].includes(profile.disclosure.trim()) ? profile.disclosure.trim() : "",
+    disclosure && !experience.includes(disclosure) ? disclosure : "",
+    experience && !hasOffer ? "需要的话，可以给你推荐。" : "",
   ].filter(Boolean).join("\n");
 }
 

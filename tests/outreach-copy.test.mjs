@@ -14,7 +14,7 @@ test('new and migrated profiles do not invent personal experience',()=>{
   for(const id of [1,2,3,4]){
     const text=openingCopy(lead(id),empty);
     assert.doesNotMatch(text,/我也?做过|亲测|我的医生|效果很好|保证/);
-    assert.match(text,/项目推广/);
+    assert.doesNotMatch(text,/先说一声|这边也做项目推广/);
     assert.ok(!text.includes(lead(id).context));
     assert.ok(text.length<200);
   }
@@ -68,13 +68,26 @@ test('generic project fragments do not borrow another treatment experience',()=>
   assert.equal(matchingExperience(lead(3),{...p,project:'眼皮'}),'');
   assert.equal(matchingExperience(lead(1),{...p,project:'面部'}),'');
 });
-test('promotion purpose cannot silently disappear; real relationship statement stays verbatim',()=>{
+test('supplied relationship text stays verbatim without a forced standalone declaration',()=>{
   const p={...emptyOutreachProfile(),disclosure:'我和这家机构有推广合作，转介有佣金。'};
   assert.ok(openingCopy(lead(1),p).includes(p.disclosure));
-  assert.match(openingCopy(lead(1),{...p,disclosure:' '}),/项目推广/);
-  assert.match(openingCopy(lead(1),{...p,disclosure:'有问题可以问我。'}),/项目推广/);
-  assert.equal((openingCopy(lead(1),{...p,disclosure:'也先跟你说明下，这次联系有推广推荐的目的。'}).match(/推广/g)||[]).length,1);
+  for(const disclosure of [' ','先说一声，我这边也做项目推广。','也先跟你说明下，这次联系有推广推荐的目的。']){
+    assert.doesNotMatch(openingCopy(lead(1),{...p,disclosure}),/先说一声|这边也做项目推广|也先跟你说明下/);
+  }
   assert.deepEqual(restoreOutreachProfile(p),p);
+});
+test('confirmed personal wording leads straight into an optional recommendation',()=>{
+  const p={...emptyOutreachProfile(),project:'超声炮',experience:'我之前也做过超声炮。',experienceConfirmed:true};
+  assert.equal(openingCopy(lead(1),p),'哈喽姐妹～我之前也做过超声炮。\n需要的话，可以给你推荐。');
+  const withCooperation={...p,disclosure:'我体验的那家现在也有合作。'};
+  assert.equal(openingCopy(lead(1),withCooperation),'哈喽姐妹～我之前也做过超声炮。\n我体验的那家现在也有合作。\n需要的话，可以给你推荐。');
+  assert.doesNotMatch(openingCopy(lead(1),p),/哪家没|面诊过没|先说一声/);
+});
+test('complete supplied offers are not followed by a duplicate question or offer',()=>{
+  const p={...emptyOutreachProfile(),project:'超声炮',experience:'我之前也做过超声炮，需要的话，可以把我当时去的那家发你看看。',experienceConfirmed:true};
+  assert.equal(openingCopy(lead(1),p),`哈喽姐妹～${p.experience}`);
+  const cooperation='我体验的那家现在也有合作，需要的话发你看看。';
+  assert.equal(openingCopy(lead(1),{...p,experience:'我之前也做过超声炮。',disclosure:cooperation}),`哈喽姐妹～我之前也做过超声炮。\n${cooperation}`);
 });
 test('generic affirmative demo replies receive topic-led followups without invented experience or contact harvesting',()=>{
   for(const id of [1,2,3,4]){

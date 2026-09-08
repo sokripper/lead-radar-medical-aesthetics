@@ -1846,12 +1846,12 @@ export default function Operations({
             />
           </label>
           <label className="field">
-            可对外分享的真实经历（可选）
+            真实经历与推荐话术（可选）
             <textarea
               aria-label="真实体验素材"
               rows={3}
               maxLength={240}
-              placeholder="用自己的话写一两句真实经历，不填示例故事，也不承诺效果。"
+              placeholder="填写你们确认过的原话，可直接包含“需要的话发你看看”等推荐句。"
               value={w.outreach.experience}
               onChange={(e) => patch({ outreach: {
                 ...w.outreach, experience: e.target.value, experienceConfirmed: false,
@@ -1871,7 +1871,7 @@ export default function Operations({
             确认是发送者本人的真实经历，并同意用于沟通
           </label>
           <p className="field-hint">
-            仅在项目匹配且素材已确认时带入经历；否则使用问题交流式开场，不生成“我也做过”。修改素材后需重新确认。
+            已确认且项目匹配时，按“打招呼 → 真实经历 → 按需推荐”生成；无对应素材时保留问题开场。修改素材后需重新确认。
           </p>
           <label className="field">
             合作关系说明（如有）
@@ -1885,7 +1885,7 @@ export default function Operations({
             />
           </label>
           <p className="field-hint">
-            开场会说明推广目的，上述真实关系作为补充一并展示。已有草稿保留原文，重新生成后才应用新素材。
+            有合作时按填写的原话带入，不额外插入固定声明，也不重复已有推荐句。已有草稿保留原文，重新生成后才应用新素材。
           </p>
           <p>不编造使用经历、疗效、资质或价格；具体诊疗问题交由专业人员处理。每次发送仍需人工确认。</p>
         </details>
