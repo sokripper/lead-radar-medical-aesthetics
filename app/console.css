@@ -1,6 +1,6 @@
 @import 'tailwindcss';
 
-:root { --ink:#202a41; --muted:#748096; --line:#e7ebf2; --blue:#355cdb; --soft-blue:#edf2ff; --canvas:#f5f7fb; --green:#238466; --nav-width:208px; }
+:root { --ink:#202a3c; --muted:#69768b; --line:#e5e9f0; --blue:#3159d6; --soft-blue:#edf2ff; --canvas:#f4f6f9; --green:#238466; --nav-width:216px; }
 * { box-sizing:border-box; }
 body { margin:0; font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif; font-size:16px; color:var(--ink); background:var(--canvas); -webkit-font-smoothing:antialiased; }
 button,input,select,textarea { font:inherit; }
