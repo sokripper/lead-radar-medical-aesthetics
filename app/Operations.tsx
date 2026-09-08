@@ -399,7 +399,7 @@ export default function Operations({
     0,
   );
   function message(l: Prospect) {
-    return openingCopy(l, w.identity, w.outreach);
+    return openingCopy(l, w.outreach);
   }
   function chooseFile(f?: File) {
     if (!f) return;
@@ -1818,8 +1818,22 @@ export default function Operations({
             确认上述为真实对外身份
           </label>
           <p className="field-hint">
-            先聊对方关心的问题，再分享真实经历。不需要写成咨询团队的推销开场。
+            身份用于事实核对，不自动加进开场。不报名字、不长篇自我介绍，直接接对方的问题。
           </p>
+          <label className="field">
+            开场称呼
+            <select
+              aria-label="开场称呼"
+              value={w.outreach.greeting}
+              onChange={(e) => patch({ outreach: {
+                ...w.outreach, greeting: e.target.value as OutreachProfile["greeting"],
+              } })}
+            >
+              <option value="哈喽姐妹">哈喽姐妹</option>
+              <option value="哈喽">哈喽</option>
+            </select>
+          </label>
+          <p className="field-hint">按沟通对象选择；不确定“姐妹”是否适用时用“哈喽”，不根据医美需求判断性别。</p>
           <label className="field">
             体验对应项目（可选）
             <input
