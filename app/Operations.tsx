@@ -8,6 +8,13 @@ import {
   MetricLine,
 } from "./WorkspaceUI";
 import { recipientEvents } from "./presentation";
+import {
+  type OutreachProfile,
+  emptyOutreachProfile,
+  restoreOutreachProfile,
+  openingCopy,
+  followupCopy,
+} from "./outreach-copy";
 import { RuleSummary, RuleFields } from "./RuleFields";
 import {
   type ScreeningRules,
@@ -86,6 +93,7 @@ type Workspace = {
   tasks: Task[];
   identity: string;
   attested: boolean;
+  outreach: OutreachProfile;
   accounts: Record<Platform, AccountStatus>;
   industry: string;
   region: string;
@@ -118,6 +126,7 @@ const initial = (leads: Prospect[]): Workspace => ({
   tasks: [],
   identity: "",
   attested: false,
+  outreach: emptyOutreachProfile(),
   accounts: { 小红书: "未授权" },
   industry: "医美",
   region: "全国",
@@ -279,6 +288,7 @@ export default function Operations({
             },
             supplements: x.supplements || {},
             sender: x.sender || "",
+            outreach: restoreOutreachProfile(x.outreach),
             dataState: ["处理中"].includes(x.dataState)
               ? "已取消"
               : x.dataState || "待处理",
@@ -389,7 +399,7 @@ export default function Operations({
     0,
   );
   function message(l: Prospect) {
-    return `你好，我是${w.identity.trim()}。看到你提到“${l.context}”，想先了解你最关心哪个问题。涉及具体方案，需要由专业人员结合实际情况确认。`;
+    return openingCopy(l, w.identity, w.outreach);
   }
   function chooseFile(f?: File) {
     if (!f) return;
@@ -684,7 +694,7 @@ export default function Operations({
       lead: id,
       text:
         replyDrafts[`${t.id}:${id}`] ??
-        "你可以先说说最关心的问题。具体方案需要由专业人员结合实际情况确认。",
+        followupCopy(leads.find((l) => l.id === id)),
     });
   }
   function todoActions(t: Task, id: number) {
@@ -1781,7 +1791,7 @@ export default function Operations({
           className="settings-section signature-details"
           open={!identityOK}
         >
-          <summary>沟通署名</summary>
+          <summary>沟通署名与体验素材</summary>
           <p>
             请填写实际对外身份并确认。当前环境只使用虚构名单模拟，不发送真实私信。
           </p>
@@ -1791,7 +1801,11 @@ export default function Operations({
               aria-label="真实对外身份"
               value={w.identity}
               onChange={(e) =>
-                patch({ identity: e.target.value, attested: false })
+                patch({
+                  identity: e.target.value,
+                  attested: false,
+                  outreach: { ...w.outreach, experienceConfirmed: false },
+                })
               }
             />
           </label>
@@ -1803,7 +1817,63 @@ export default function Operations({
             />
             确认上述为真实对外身份
           </label>
-          <p>不编造使用经历、疗效、资质或价格。</p>
+          <p className="field-hint">
+            先聊对方关心的问题，再分享真实经历。不需要写成咨询团队的推销开场。
+          </p>
+          <label className="field">
+            体验对应项目（可选）
+            <input
+              aria-label="体验对应项目"
+              placeholder="填写实际做过的项目名称"
+              value={w.outreach.project}
+              onChange={(e) => patch({ outreach: {
+                ...w.outreach, project: e.target.value, experienceConfirmed: false,
+              } })}
+            />
+          </label>
+          <label className="field">
+            可对外分享的真实经历（可选）
+            <textarea
+              aria-label="真实体验素材"
+              rows={3}
+              maxLength={240}
+              placeholder="用自己的话写一两句真实经历，不填示例故事，也不承诺效果。"
+              value={w.outreach.experience}
+              onChange={(e) => patch({ outreach: {
+                ...w.outreach, experience: e.target.value, experienceConfirmed: false,
+              } })}
+            />
+          </label>
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              aria-label="确认真实体验素材"
+              disabled={!identityOK || !w.outreach.project.trim() || !w.outreach.experience.trim()}
+              checked={w.outreach.experienceConfirmed}
+              onChange={(e) => patch({ outreach: {
+                ...w.outreach, experienceConfirmed: e.target.checked,
+              } })}
+            />
+            确认是发送者本人的真实经历，并同意用于沟通
+          </label>
+          <p className="field-hint">
+            仅在项目匹配且素材已确认时带入经历；否则使用问题交流式开场，不生成“我也做过”。修改素材后需重新确认。
+          </p>
+          <label className="field">
+            合作关系说明（如有）
+            <textarea
+              aria-label="推广与合作说明"
+              rows={2}
+              maxLength={160}
+              placeholder="如有机构合作、转介或返佣，请按实际情况说明。"
+              value={w.outreach.disclosure}
+              onChange={(e) => patch({ outreach: { ...w.outreach, disclosure: e.target.value } })}
+            />
+          </label>
+          <p className="field-hint">
+            开场会说明推广目的，上述真实关系作为补充一并展示。已有草稿保留原文，重新生成后才应用新素材。
+          </p>
+          <p>不编造使用经历、疗效、资质或价格；具体诊疗问题交由专业人员处理。每次发送仍需人工确认。</p>
         </details>
       </Sheet>
       <Sheet
@@ -1983,6 +2053,7 @@ export default function Operations({
                   }
                 />
               </label>
+              <p className="field-hint">体验分享式建议 · 请核对真实经历和推广说明，确认后再发送。</p>
               <div className="review-tools">
                 <span>{`小红书 · ${w.accounts.小红书}`}</span>
                 {w.accounts.小红书 !== "正常" && (
