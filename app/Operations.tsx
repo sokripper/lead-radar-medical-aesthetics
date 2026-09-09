@@ -84,6 +84,7 @@ type Task = {
   monitor: Monitoring;
   paused: boolean;
   todos: Record<number, TodoStatus>;
+  notes: Record<number, { text: string; time: string }[]>;
   events: string[];
 };
 type Workspace = {
@@ -226,6 +227,8 @@ export default function Operations({
   const [regionFilter, setRegionFilter] = useState("");
   const [contactFilter, setContactFilter] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [inputCheckOpen, setInputCheckOpen] = useState(false);
+  const [worksheet, setWorksheet] = useState("");
   const [busy, setBusy] = useState(false);
   const [settings, setSettings] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
@@ -262,8 +265,11 @@ export default function Operations({
     task: number;
     lead: number;
     text: string;
+    contextChanged: boolean;
+    reviewedLatest: boolean;
   } | null>(null);
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
+  const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
   const upload = useRef<HTMLInputElement>(null);
   const processingTimer = useRef<number | null>(null);
   const submitting = useRef(false);
@@ -308,7 +314,12 @@ export default function Operations({
                   ? x.accounts.小红书
                   : "未授权",
             },
-            tasks: x.tasks.map((t: Task) => ({ ...t, todos: t.todos || {} })),
+            tasks: x.tasks.map((t: Task) => ({
+              ...t,
+              todos: t.todos || {},
+              notes: t.notes || {},
+              monitor: { ...t.monitor, checking: false },
+            })),
           });
         }
         const drafts = localStorage.getItem("lead-radar-reply-drafts-4");
@@ -501,6 +512,7 @@ export default function Operations({
           monitor: reviseMonitoring(emptyMonitoring(), old.monitor),
           paused: false,
           todos: {},
+          notes: {},
           events: [
             `${new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })} 已受理演示提交`,
           ],
@@ -632,31 +644,45 @@ export default function Operations({
       )
     )
       return;
-    const id = t.ids.find(
-      (i) => t.results[i] === "发送成功" && !t.replies.includes(i),
-    );
     setW((old) => ({
       ...old,
       tasks: old.tasks.map((x) =>
         x.id === t.id
-          ? {
-              ...x,
-              replies: add && id !== undefined ? [...x.replies, id] : x.replies,
-              monitor: {
-                ...x.monitor,
-                lastCheck: new Date().toLocaleString("zh-CN", {
-                  timeZone: "Asia/Shanghai",
-                }),
-              },
-            }
+          ? { ...x, monitor: { ...x.monitor, checking: true } }
           : x,
       ),
     }));
-    setNotice(
-      add && id !== undefined
-        ? "收到示例回复，待办尚未处理。"
-        : "检查完成（模拟）：没有新增回复，未生成内容。",
-    );
+    window.setTimeout(() => {
+      const replyId = t.ids.find(
+        (i) => t.results[i] === "发送成功" && !t.replies.includes(i),
+      );
+      const found = add && replyId !== undefined;
+      setW((old) => ({
+        ...old,
+        tasks: old.tasks.map((x) => {
+          if (x.id !== t.id) return x;
+          return {
+            ...x,
+            replies:
+              found && !x.replies.includes(replyId!)
+                ? [...x.replies, replyId!]
+                : x.replies,
+            monitor: {
+              ...x.monitor,
+              checking: false,
+              lastCheck: new Date().toLocaleString("zh-CN", {
+                timeZone: "Asia/Shanghai",
+              }),
+            },
+          };
+        }),
+      }));
+      setNotice(
+        found
+          ? "收到示例回复，待办尚未处理。"
+          : "检查完成（模拟）：没有新增回复，未生成内容。",
+      );
+    }, 800);
   }
   function setTodo(t: Task, id: number, status: TodoStatus, reason = "") {
     setW((old) => ({
@@ -689,22 +715,46 @@ export default function Operations({
       text:
         replyDrafts[`${t.id}:${id}`] ??
         followupCopy(leads.find((l) => l.id === id)),
+      contextChanged: true,
+      reviewedLatest: false,
     });
+  }
+  function addNote(t: Task, id: number) {
+    const key = `${t.id}:${id}`;
+    const text = noteDrafts[key]?.trim();
+    if (!text) return;
+    const note = {
+      text,
+      time: new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" }),
+    };
+    setW((old) => ({
+      ...old,
+      tasks: old.tasks.map((x) =>
+        x.id === t.id
+          ? {
+              ...x,
+              notes: { ...x.notes, [id]: [...(x.notes[id] || []), note] },
+            }
+          : x,
+      ),
+    }));
+    setNoteDrafts((old) => ({ ...old, [key]: "" }));
+    setNotice("跟进备注已保存。备注不会作为私信发送。");
   }
   function todoActions(t: Task, id: number) {
     const state = todoStatus(t.followResults[id], t.todos[id]);
     return (
       <div className="task-todo">
-        <p>待回复：{state}</p>
+        <p>待回复：{state === "已转人工" ? "人工接管中" : state}</p>
         {state === "已转人工" && (
           <button
             className="button text"
             onClick={() => {
-              if (window.confirm("确认接管问题已解决，恢复此待办？"))
+              if (window.confirm("确认问题已解决，并恢复自动处理此待办？"))
                 setTodo(t, id, "待处理");
             }}
           >
-            确认恢复处理
+            问题已解决，恢复自动处理
           </button>
         )}
         {![
@@ -718,11 +768,15 @@ export default function Operations({
             <button
               className="button text"
               onClick={() => {
-                if (window.confirm("转人工后停止自动处理此待办，是否继续？"))
+                if (
+                  window.confirm(
+                    "停止自动处理后，将由当前操作人手动跟进。是否继续？",
+                  )
+                )
                   setTodo(t, id, "已转人工");
               }}
             >
-              转人工
+              停止自动处理
             </button>
             <button
               className="button text"
@@ -988,6 +1042,13 @@ export default function Operations({
                 {current ? "重新上传" : "选择数据文件"}
               </button>
               <button
+                className="button text"
+                disabled={!loaded || busy}
+                onClick={() => setInputCheckOpen(true)}
+              >
+                查看输入异常处理
+              </button>
+              <button
                 className={`button ${file ? "primary" : "secondary"}`}
                 disabled={!loaded || busy}
                 onClick={runSample}
@@ -1221,6 +1282,7 @@ export default function Operations({
                       "已联系",
                       "发送失败",
                       "结果待核实",
+                      "已取消",
                     ].map((v) => (
                       <option key={v}>{v}</option>
                     ))}
@@ -1742,6 +1804,82 @@ export default function Operations({
         </>
       )}
       <Sheet
+        open={inputCheckOpen}
+        title="数据输入检查"
+        subtitle="上传后发现问题时，按提示修正再继续处理"
+        onClose={() => setInputCheckOpen(false)}
+        footer={
+          <button
+            className="button primary"
+            disabled={!worksheet}
+            onClick={() => {
+              setInputCheckOpen(false);
+              setNotice(`已选择工作表“${worksheet}”，可以继续处理。`);
+            }}
+          >
+            确认工作表
+          </button>
+        }
+      >
+        <div className="input-issue-grid">
+          <section>
+            <StatusPill status="文件损坏" />
+            <h3>Excel 无法读取</h3>
+            <p>文件可能已损坏或格式不完整，请检查原文件后重新上传。</p>
+            <button
+              className="button secondary"
+              onClick={() => {
+                setInputCheckOpen(false);
+                upload.current?.click();
+              }}
+            >
+              重新选择文件
+            </button>
+          </section>
+          <section>
+            <StatusPill status="字段缺失" />
+            <h3>缺少必填字段</h3>
+            <p>缺少：用户昵称、评论内容、原帖链接。补齐后再上传。</p>
+            <button
+              className="button secondary"
+              onClick={() => setNotice("字段要求：用户昵称、评论内容、原帖链接。")}
+            >
+              查看字段要求
+            </button>
+          </section>
+          <section>
+            <StatusPill status="重复批次" />
+            <h3>发现重复导入</h3>
+            <p>该文件与已有批次内容一致，避免重复产生名单和联系记录。</p>
+            <button
+              className="button secondary"
+              onClick={() => {
+                setInputCheckOpen(false);
+                navigate("leads");
+              }}
+            >
+              查看已有批次
+            </button>
+          </section>
+          <section className="worksheet-choice">
+            <StatusPill status="待选择" />
+            <h3>检测到多个工作表</h3>
+            <p>请选择本次需要处理的数据工作表。</p>
+            {["医美评论_本周", "医美评论_上周", "汇总说明"].map((name) => (
+              <label key={name}>
+                <input
+                  type="radio"
+                  name="worksheet"
+                  checked={worksheet === name}
+                  onChange={() => setWorksheet(name)}
+                />
+                {name}
+              </label>
+            ))}
+          </section>
+        </div>
+      </Sheet>
+      <Sheet
         open={settings}
         title="账号与规则"
         onClose={saveSettings}
@@ -1789,6 +1927,38 @@ export default function Operations({
             )}
           </div>
           <p className="field-hint">当前为交互演示，登录结果不连接真实账号。</p>
+          <div className="account-status-guide">
+            <h4>异常状态与处理</h4>
+            <div>
+              <StatusPill status="已失效" />
+              <p>登录凭证已过期，需要重新登录。</p>
+              <button className="button text" onClick={startLogin}>
+                重新登录
+              </button>
+            </div>
+            <div>
+              <StatusPill status="受限" />
+              <p>平台限制了部分操作，暂停发送与回复检查。</p>
+              <button
+                className="button text"
+                onClick={() =>
+                  setNotice("请前往小红书查看账号限制原因，解除后再重新登录。")
+                }
+              >
+                查看处理说明
+              </button>
+            </div>
+            <div>
+              <StatusPill status="连接异常" />
+              <p>连接暂时失败，可保留任务和草稿后重试。</p>
+              <button
+                className="button text"
+                onClick={() => setNotice("已发起重试；任务和草稿保持不变。")}
+              >
+                重试连接
+              </button>
+            </div>
+          </div>
         </section>
         <section className="settings-section">
           <h3>筛选规则</h3>
@@ -2792,6 +2962,40 @@ export default function Operations({
               )}
             </div>
             {task.replies.includes(person.id) && todoActions(task, person.id)}
+            <section className="chat-notes">
+              <div>
+                <h3>跟进备注</h3>
+                <p>仅供内部查看，不会作为私信发送。</p>
+              </div>
+              {(task.notes[person.id] || []).length > 0 && (
+                <ol className="note-list">
+                  {task.notes[person.id].map((note, index) => (
+                    <li key={`${note.time}-${index}`}>
+                      <p>{note.text}</p>
+                      <small>当前操作人 · {note.time}</small>
+                    </li>
+                  ))}
+                </ol>
+              )}
+              <textarea
+                aria-label="跟进备注"
+                placeholder="记录沟通重点、后续关注事项"
+                value={noteDrafts[`${task.id}:${person.id}`] || ""}
+                onChange={(e) =>
+                  setNoteDrafts((old) => ({
+                    ...old,
+                    [`${task.id}:${person.id}`]: e.target.value,
+                  }))
+                }
+              />
+              <button
+                className="button secondary"
+                disabled={!noteDrafts[`${task.id}:${person.id}`]?.trim()}
+                onClick={() => addNote(task, person.id)}
+              >
+                保存备注
+              </button>
+            </section>
             <Disclosure title="演示结果操作" className="demo-controls">
               {controls(task, person.id)}
               {task.followups[person.id] && controls(task, person.id, true)}
@@ -2831,7 +3035,8 @@ export default function Operations({
               !identityOK ||
               Boolean(
                 replyTask && reply && replyTask.todos[reply.lead] !== "待确认",
-              )
+              ) ||
+              Boolean(reply?.contextChanged && !reply.reviewedLatest)
             }
             onClick={() => {
               if (
@@ -2841,7 +3046,8 @@ export default function Operations({
                 replyTask.followups[reply.lead] ||
                 w.accounts.小红书 !== "正常" ||
                 !identityOK ||
-                replyTask.todos[reply.lead] !== "待确认"
+                replyTask.todos[reply.lead] !== "待确认" ||
+                (reply.contextChanged && !reply.reviewedLatest)
               )
                 return;
               setW((old) => ({
@@ -2868,6 +3074,13 @@ export default function Operations({
         }
       >
         <blockquote>用户回复（示例）：可以，想再了解一下。</blockquote>
+        {reply?.contextChanged && (
+          <div className="context-update" role="alert">
+            <strong>确认前收到了一条新消息</strong>
+            <p>最新消息（示例）：我更关注恢复期，能先说明一下吗？</p>
+            <p>请结合最新上下文重新核对回复内容，再进入待确认。</p>
+          </div>
+        )}
         <label className="field">
           拟回复内容
           <textarea
@@ -2875,7 +3088,9 @@ export default function Operations({
             value={reply?.text || ""}
             onChange={(e) => {
               const text = e.target.value;
-              setReply((r) => (r ? { ...r, text } : r));
+              setReply((r) =>
+                r ? { ...r, text, reviewedLatest: false } : r,
+              );
               if (reply && replyTask) setTodo(replyTask, reply.lead, "处理中");
               if (reply)
                 setReplyDrafts((d) => ({
@@ -2885,6 +3100,20 @@ export default function Operations({
             }}
           />
         </label>
+        {reply?.contextChanged && (
+          <label className="checkbox-label context-review-check">
+            <input
+              type="checkbox"
+              checked={reply.reviewedLatest}
+              onChange={(e) =>
+                setReply((r) =>
+                  r ? { ...r, reviewedLatest: e.target.checked } : r,
+                )
+              }
+            />
+            我已根据最新消息重新核对回复正文
+          </label>
+        )}
         <p>
           回复状态：
           {replyTask && reply
@@ -2896,12 +3125,16 @@ export default function Operations({
         </p>
         <button
           className="button secondary"
-          disabled={!reply?.text.trim() || !identityOK}
+          disabled={
+            !reply?.text.trim() ||
+            !identityOK ||
+            Boolean(reply?.contextChanged && !reply.reviewedLatest)
+          }
           onClick={() => {
             if (reply && replyTask) setTodo(replyTask, reply.lead, "待确认");
           }}
         >
-          内容已审核，进入待确认
+          {reply?.contextChanged ? "重新核对完成，进入待确认" : "内容已审核，进入待确认"}
         </button>
         <p>提交与发送结果分别记录。</p>
       </Sheet>

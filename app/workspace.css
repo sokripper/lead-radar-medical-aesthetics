@@ -252,6 +252,55 @@
   width: 40px;
   height: 40px;
 }
+.account-status-guide {
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 10px;
+}
+.account-status-guide h4 {
+  font-size: 14px;
+}
+.account-status-guide > div {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.account-status-guide > div:last-child {
+  border-bottom: 0;
+}
+.account-status-guide p {
+  font-size: 12px;
+  color: var(--muted);
+}
+.input-issue-grid {
+  display: grid;
+  gap: 14px;
+}
+.input-issue-grid > section {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 16px;
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+}
+.input-issue-grid h3 {
+  font-size: 15px;
+}
+.input-issue-grid p {
+  color: var(--muted);
+  font-size: 14px;
+}
+.worksheet-choice label {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  font-size: 14px;
+}
 .ui-disclosure {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -442,6 +491,68 @@
 }
 .chat-log {
   margin: 0 24px 18px;
+}
+.chat-notes {
+  margin: 0 24px 18px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  display: grid;
+  gap: 12px;
+}
+.chat-notes h3 {
+  font-size: 14px;
+}
+.chat-notes > div > p,
+.chat-notes small {
+  color: var(--muted);
+  font-size: 12px;
+}
+.chat-notes textarea {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 10px;
+  font: inherit;
+  font-size: 14px;
+}
+.chat-notes > .button {
+  justify-self: start;
+}
+.note-list {
+  display: grid;
+  gap: 8px;
+}
+.note-list li {
+  padding: 10px;
+  border-radius: 7px;
+  background: #f7f9fc;
+}
+.note-list p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+}
+.context-update {
+  padding: 16px;
+  border: 1px solid #e4b45d;
+  border-radius: 8px;
+  background: #fff9ed;
+  display: grid;
+  gap: 7px;
+}
+.context-update strong {
+  font-size: 14px;
+}
+.context-update p {
+  color: #795d2c;
+  font-size: 13px;
+}
+.context-review-check {
+  margin: 0;
 }
 .chat-composer {
   padding: 18px 24px;
@@ -1230,6 +1341,16 @@
   }
   .chat-log {
     margin: 0 16px 16px;
+  }
+  .chat-notes {
+    margin: 0 16px 16px;
+  }
+  .account-status-guide > div {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .account-status-guide > div > .button {
+    grid-column: 2;
+    justify-self: start;
   }
   .chat-composer {
     padding: 14px 16px;

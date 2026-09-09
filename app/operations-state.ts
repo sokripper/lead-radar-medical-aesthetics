@@ -28,8 +28,8 @@ export function todoStatus(result?:SendStatus,local:TodoStatus='待处理'):Todo
   if(result==='已取消')return '已关闭';
   return local;
 }
-export type Monitoring = { enabled: boolean; interval: string; deadline: string; paused: boolean; ended: boolean; lastCheck: string; startedAt?:number };
-export const emptyMonitoring = (): Monitoring => ({enabled:false,interval:'',deadline:'',paused:false,ended:false,lastCheck:''});
+export type Monitoring = { enabled: boolean; interval: string; deadline: string; paused: boolean; ended: boolean; lastCheck: string; startedAt?:number; checking?: boolean };
+export const emptyMonitoring = (): Monitoring => ({enabled:false,interval:'',deadline:'',paused:false,ended:false,lastCheck:'',checking:false});
 export function monitorError(m: Monitoring, now = Date.now()) {
   if (!m.enabled) return '';
   if (!['30','60'].includes(m.interval)) return '请选择 30 或 60 分钟';
@@ -42,12 +42,13 @@ export function monitorStatus(m: Monitoring, now = Date.now(), abnormal=false) {
   if (m.ended) return '已结束';
   if (beijingTime(m.deadline)<=now) return '已到期';
   if(abnormal)return '异常暂停';
+  if(m.checking)return '检查中';
   return m.paused ? '已暂停' : '等待检查';
 }
 export function reviseMonitoring(previous:Monitoring,draft:Monitoring,now=Date.now()):Monitoring{
   if(!draft.enabled)return {...emptyMonitoring(),lastCheck:previous.lastCheck};
   const active=previous.enabled&&!['已结束','已到期'].includes(monitorStatus(previous,now));
-  const next={...draft,startedAt:active?(previous.startedAt||now):now,paused:active?previous.paused:false,ended:false,lastCheck:previous.lastCheck};
+  const next={...draft,startedAt:active?(previous.startedAt||now):now,paused:active?previous.paused:false,ended:false,lastCheck:previous.lastCheck,checking:false};
   const error=monitorError(next,now);if(error)throw Error(error);return next;
 }
 export function canGenerate(mode: 'demo'|'formal', identity: string, attested: boolean) {
