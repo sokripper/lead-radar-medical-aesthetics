@@ -8,9 +8,7 @@ export default function Home() {
   const [view, setView] = useState<"screening" | "leads" | "workflow" | "accounts">(
     "screening",
   );
-  const [adminMode, setAdminMode] = useState(false);
   const [help, setHelp] = useState(false);
-  const switchRole = () => { setAdminMode(!adminMode); setView(adminMode ? "screening" : "accounts"); };
   return (
     <main className="console-shell">
       <aside className="console-nav">
@@ -22,9 +20,8 @@ export default function Home() {
             线索雷达<small>LEAD RADAR</small>
           </div>
         </a>
-        <p className="workspace-caption">{adminMode ? "管理侧 · 交互演示" : "社交线索工作台"}</p>
+        <p className="workspace-caption">社交线索工作台</p>
         <nav aria-label="主导航">
-          {adminMode ? <button className="active" aria-current="page" onClick={() => setView("accounts")}><Icon name="settings" />账号管理</button> : <>
           <button
             className={view === "screening" ? "active" : ""}
             aria-current={view === "screening" ? "page" : undefined}
@@ -49,8 +46,15 @@ export default function Home() {
             <Icon name="chat" />
             触达与跟进
           </button>
-          </>}
-          <button className="mobile-role-switch" aria-label={adminMode ? "返回个人侧" : "管理侧（演示）"} onClick={switchRole}>{adminMode ? "个人" : "管理"}</button>
+          <button
+            className={`admin-nav-button ${view === "accounts" ? "active" : ""}`}
+            aria-current={view === "accounts" ? "page" : undefined}
+            aria-label="账号管理（管理权限）"
+            onClick={() => setView("accounts")}
+          >
+            <Icon name="settings" />
+            <span>账号管理<small>管理权限</small></span>
+          </button>
         </nav>
         <div className="nav-bottom">
           <div className="demo-badge">
@@ -63,9 +67,6 @@ export default function Home() {
           </p>
           <button onClick={() => setHelp(!help)}>
             <Icon name="info" size={17} /> 使用说明
-          </button>
-          <button onClick={switchRole}>
-            <Icon name="settings" size={17} /> {adminMode ? "返回个人侧" : "切换管理侧（演示）"}
           </button>
         </div>
       </aside>
@@ -81,7 +82,7 @@ export default function Home() {
                   : view === "accounts" ? "账号管理" : "触达与跟进"}
             </strong>
           </div>
-          <span className="topbar-version">{adminMode ? "管理侧 · 演示" : "小红书 · 私信"}</span>
+          <span className="topbar-version">{view === "accounts" ? "管理权限 · 演示" : "小红书 · 私信"}</span>
         </header>
         <div className="console-content">
           {help && (

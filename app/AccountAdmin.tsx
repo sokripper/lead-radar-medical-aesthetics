@@ -41,7 +41,7 @@ export default function AccountAdmin({ accounts, onChange }: {
       <div><div className="eyebrow">MANAGEMENT</div><h1>账号管理</h1><p>维护平台账号与主子关系，并分配给操作人。</p></div>
       <button className="button primary" onClick={() => open()}>新增账号</button>
     </div>
-    <p className="prototype-note">管理侧演示 · 分配与状态仅保存在当前浏览器；不连接真实小红书或抖音账号。</p>
+    <p className="prototype-note">管理权限页面演示 · 原型暂未接入真实权限校验；分配与状态仅保存在当前浏览器。</p>
     <section className="surface admin-accounts">
       <div className="admin-accounts-header"><div><h2>平台账号</h2><p>个人侧只会看到分配给自己的可用账号，不展示登录或云电脑配置。</p></div>
         <label className="field">平台筛选<select aria-label="账号平台筛选" value={filter} onChange={event => setFilter(event.target.value as typeof filter)}><option>全部</option><option>小红书</option><option>抖音</option></select></label>

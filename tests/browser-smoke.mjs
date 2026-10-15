@@ -20,7 +20,7 @@ await check('个人侧首页直接选择账号并在触达页保留',async()=>{
  assert.equal(await p.getByLabel('个人侧选择发送账号',{exact:true}).inputValue(),'xhs-sub');
  await b('数据处理').click();
 });
-await check('管理侧账号分配与个人侧隔离',async()=>{await b('切换管理侧（演示）').click();await p.getByRole('heading',{name:'账号管理'}).waitFor();await b('编辑与分配').first().click();await d('编辑与分配账号').getByLabel('运营同事 A').check();await b('保存账号').click();await p.getByText('当前操作人、运营同事 A',{exact:true}).waitFor();await b('返回个人侧').click();assert.equal(await b('新增账号').count(),0);});
+await check('账号管理与业务页面同级导航且可直接返回',async()=>{assert.equal(await b('切换管理侧（演示）').count(),0);await b('账号管理（管理权限）').click();await p.getByRole('heading',{name:'账号管理'}).waitFor();await b('编辑与分配').first().click();await d('编辑与分配账号').getByLabel('运营同事 A').check();await b('保存账号').click();await p.getByText('当前操作人、运营同事 A',{exact:true}).waitFor();await b('数据处理').click();assert.equal(await b('新增账号').count(),0);assert.equal(await p.getByLabel('个人侧选择发送账号',{exact:true}).inputValue(),'xhs-sub');});
 await b('调整筛选规则').click();await p.getByLabel('目标人群',{exact:true}).fill('近期正在比较医美项目的人');await b('保存筛选规则').click();
 await b('体验示例数据').click();await p.getByText('0 位用户已选择',{exact:true}).waitFor();
 await check('默认 A/B 且无人选中',async()=>{assert.equal(await p.locator('tbody tr').count(),4);assert.equal(await p.locator('tbody input:checked').count(),0);});
@@ -70,6 +70,6 @@ await check('手机名单与聊天无整体横向溢出，底部回复操作可�
  const action=await chat.getByRole('button',{name:'回复这位用户'}).boundingBox();assert.ok(action.y+action.height<=844);
  await p.screenshot({path:shot+'/mobile-chat.png'});await chat.getByRole('button',{name:'关闭面板'}).click();
 });
-await check('管理侧账号页面在手机宽度下不横向溢出',async()=>{await b('管理侧（演示）').click();assert.equal(await p.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth),false);await b('编辑与分配').first().click();assert.equal(await p.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth),false);await p.screenshot({path:shot+'/mobile-account-admin.png'});await b('取消').click();});
+await check('手机端账号管理可进入也可返回且不横向溢出',async()=>{await b('账号管理（管理权限）').click();assert.equal(await p.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth),false);await b('编辑与分配').first().click();assert.equal(await p.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth),false);await p.screenshot({path:shot+'/mobile-account-admin.png'});await b('取消').click();await b('触达与跟进').click();await p.getByRole('heading',{name:'触达与跟进'}).waitFor();});
 assert.deepEqual(errors,[]);console.log('PASS browser flow; no page errors');
 } finally {await browser.close();}
