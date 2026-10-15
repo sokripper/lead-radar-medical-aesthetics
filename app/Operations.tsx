@@ -21,6 +21,14 @@ import {
   outreachKey,
 } from "./outreach-copy";
 import { RuleSummary, RuleFields } from "./RuleFields";
+import AccountAdmin from "./AccountAdmin";
+import {
+  type ManagedAccount,
+  demoAccounts,
+  restoreManagedAccounts,
+  assignedAccounts,
+  accountReady,
+} from "./account-management";
 import {
   type ScreeningRules,
   defaultRules,
@@ -55,7 +63,7 @@ import {
   mergePreparedQueue,
 } from "./operations-state";
 
-type View = "screening" | "leads" | "workflow";
+type View = "screening" | "leads" | "workflow" | "accounts";
 type Platform = "小红书";
 type Batch = {
   id: number;
@@ -75,6 +83,8 @@ type Queue = {
 type Task = {
   id: number;
   name: string;
+  senderAccountId?: string;
+  senderAccountName?: string;
   ids: number[];
   texts: Record<number, string>;
   results: Record<number, SendStatus>;
@@ -105,6 +115,7 @@ type Workspace = {
   attested: boolean;
   outreach: OutreachProfile;
   accounts: Record<Platform, AccountStatus>;
+  managedAccounts: ManagedAccount[];
   industry: string;
   region: string;
   monitor: Monitoring;
@@ -125,7 +136,7 @@ const initial = (leads: Prospect[]): Workspace => ({
   supplements: {},
   sender: "",
   dataState: "待处理",
-  schema: 4,
+  schema: 5,
   batches: [],
   batchId: 0,
   grades: Object.fromEntries(leads.map((l) => [l.id, l.grade])),
@@ -138,6 +149,7 @@ const initial = (leads: Prospect[]): Workspace => ({
   attested: false,
   outreach: emptyOutreachProfile(),
   accounts: { 小红书: "未授权" },
+  managedAccounts: demoAccounts(),
   industry: "医美",
   region: "全国",
   monitor: emptyMonitoring(),
@@ -235,11 +247,6 @@ export default function Operations({
   const [ruleDraft, setRuleDraft] = useState(defaultRules);
   const [attentionOpen, setAttentionOpen] = useState(false);
   const [attentionFilter, setAttentionFilter] = useState("ALL");
-  const [loginOpen, setLoginOpen] = useState(false);
-  const [loginStep, setLoginStep] = useState<
-    "waiting" | "scanned" | "expired" | "verification"
-  >("waiting");
-  const previousAccount = useRef<AccountStatus>("未授权");
   const [monitorEdit, setMonitorEdit] = useState<{
     task: number;
     draft: Monitoring;
@@ -282,11 +289,11 @@ export default function Operations({
   useEffect(() => {
     const restore = window.setTimeout(() => {
       try {
-        const raw = localStorage.getItem("lead-radar-workspace-4");
+        const raw = localStorage.getItem("lead-radar-workspace-5") || localStorage.getItem("lead-radar-workspace-4");
         if (raw) {
           const x = JSON.parse(raw);
           if (
-            x.schema !== 4 ||
+            ![4, 5].includes(x.schema) ||
             !Array.isArray(x.batches) ||
             !Array.isArray(x.tasks) ||
             !x.queue ||
@@ -296,13 +303,15 @@ export default function Operations({
           setW({
             ...initial(leads),
             ...x,
+            schema: 5,
+            managedAccounts: restoreManagedAccounts(x.managedAccounts),
             rules: x.rules || {
               ...defaultRules(),
               industry: x.industry || "医美",
               region: x.region || "全国",
             },
             supplements: x.supplements || {},
-            sender: x.sender || "",
+            sender: x.schema === 4 && x.sender === "xhs" ? "xhs-main" : x.sender || "",
             outreach: restoreOutreachProfile(x.outreach),
             dataState: ["处理中"].includes(x.dataState)
               ? "已取消"
@@ -316,6 +325,8 @@ export default function Operations({
             },
             tasks: x.tasks.map((t: Task) => ({
               ...t,
+              senderAccountId: t.senderAccountId || (x.schema === 4 ? "xhs-main" : undefined),
+              senderAccountName: t.senderAccountName || (x.schema === 4 ? "小红书品牌号" : undefined),
               todos: t.todos || {},
               notes: t.notes || {},
               monitor: { ...t.monitor, checking: false },
@@ -334,7 +345,7 @@ export default function Operations({
   useEffect(() => {
     if (!loaded) return;
     try {
-      localStorage.setItem("lead-radar-workspace-4", JSON.stringify(w));
+      localStorage.setItem("lead-radar-workspace-5", JSON.stringify(w));
     } catch {
       queueMicrotask(() => setSaveError("本地保存失败，刷新可能丢失编辑。"));
     }
@@ -398,8 +409,13 @@ export default function Operations({
         ? "话术已更新，请重新生成；原编辑已保留" : "");
   }
   const copyPending = leads.filter(l => w.queue.ids.includes(l.id) && !w.queue.blocked.includes(l.id) && copyIssue(l));
-  const ready = identityOK && w.sender === "xhs"
-    ? readyRecipients(leads, w.queue, w.grades, occupied, { 小红书: w.accounts.小红书 === "正常" }, copyPending.map(l => l.id)).filter(l => available(l.id))
+  const personalAccounts = assignedAccounts(w.managedAccounts);
+  const selectedAccount = personalAccounts.find(account => account.id === w.sender);
+  const senderReady = accountReady(w.managedAccounts, w.sender);
+  const taskAccount = (t: Task) => w.managedAccounts.find(account => account.id === t.senderAccountId);
+  const taskReady = (t: Task) => accountReady(w.managedAccounts, t.senderAccountId || "");
+  const ready = identityOK && senderReady
+    ? readyRecipients(leads, w.queue, w.grades, occupied, { 小红书: true }, copyPending.map(l => l.id)).filter(l => available(l.id))
     : [];
   const detailLead = leads.find((l) => l.id === detail);
   const task = w.tasks.find((t) => t.id === convo?.task);
@@ -499,6 +515,8 @@ export default function Operations({
         {
           id,
           name: `触达任务 ${old.tasks.length + 1}`,
+          senderAccountId: old.sender,
+          senderAccountName: old.managedAccounts.find(account => account.id === old.sender)?.name || "未指定账号",
           ids,
           texts: Object.fromEntries(
             ready.map((l) => [l.id, old.queue.drafts[l.id]]),
@@ -550,7 +568,7 @@ export default function Operations({
         )
           return t;
         if (
-          old.accounts[platform(leads.find((l) => l.id === id)!)] !== "正常" &&
+          !accountReady(old.managedAccounts, t.senderAccountId || "") &&
           from !== "执行中" &&
           !event.startsWith("verified-") &&
           event !== "cancel"
@@ -576,7 +594,7 @@ export default function Operations({
     const blocked =
       (follow && ["已关闭", "已转人工"].includes(t.todos[id])) ||
       t.paused ||
-      w.accounts[platform(leads.find((l) => l.id === id)!)] !== "正常";
+      !taskReady(t);
     return (
       <div className="inline-actions result-controls">
         {(status === "待执行" || status === "执行中") && (
@@ -639,9 +657,7 @@ export default function Operations({
     if (
       t.paused ||
       monitorStatus(t.monitor) !== "等待检查" ||
-      t.ids.some(
-        (i) => w.accounts[platform(leads.find((l) => l.id === i)!)] !== "正常",
-      )
+      !taskReady(t)
     )
       return;
     setW((old) => ({
@@ -892,22 +908,6 @@ export default function Operations({
     });
     setNotice("该条已完成模拟重试；信息仍不足时保留待判断，其他结果未重跑。");
   }
-  function startLogin() {
-    previousAccount.current = w.accounts.小红书;
-    setLoginStep("waiting");
-    setLoginOpen(true);
-    patch({ accounts: { 小红书: "授权中" } });
-  }
-  function closeLogin() {
-    setLoginOpen(false);
-    patch({ accounts: { 小红书: previousAccount.current } });
-  }
-  function finishDemoLogin() {
-    if (loginStep !== "scanned") return;
-    patch({ accounts: { 小红书: "正常" } });
-    setLoginOpen(false);
-    setNotice("已模拟收到登录成功结果，未连接真实小红书账号。");
-  }
   function openMonitor(t: Task) {
     const active =
       t.monitor.enabled &&
@@ -958,6 +958,13 @@ export default function Operations({
       setNotice("已返回原草稿，请核对最新配置。正文未自动改写。");
     }
   }
+  if (view === "accounts") {
+    return <AccountAdmin accounts={w.managedAccounts} onChange={managedAccounts => {
+      setW(old => ({ ...old, managedAccounts,
+        sender: accountReady(managedAccounts, old.sender) ? old.sender : "",
+      }));
+    }} />;
+  }
   return (
     <>
       <div className="page-heading">
@@ -980,12 +987,36 @@ export default function Operations({
         </div>
         <button className="button secondary" onClick={() => openSettings()}>
           <Icon name="settings" size={17} />
-          账号与规则
+          规则与话术
         </button>
       </div>
       <p className="prototype-note">
-        演示工作区 · 数据处理、登录与发送均为模拟，记录仅保存在当前浏览器。
+        演示工作区 · 个人侧仅使用已分配账号，数据处理与发送均为模拟，记录仅保存在当前浏览器。
       </p>
+      {view !== "leads" && (
+        <section className="surface personal-account-picker" aria-label="新任务使用账号">
+          <div>
+            <strong>新任务使用账号</strong>
+            <p>从分配给你的账号中选择；已创建的任务仍使用原账号。</p>
+          </div>
+          <label className="field">
+            小红书账号
+            <select
+              aria-label="个人侧选择发送账号"
+              value={selectedAccount ? w.sender : ""}
+              onChange={(event) => patch({ sender: event.target.value })}
+            >
+              <option value="">请选择账号</option>
+              {personalAccounts.map(account => (
+                <option key={account.id} value={account.id} disabled={account.status !== "正常"}>
+                  {account.name}{account.status === "正常" ? "" : ` · ${account.status}`}
+                </option>
+              ))}
+            </select>
+          </label>
+          {!personalAccounts.length && <p className="account-picker-message" role="alert">暂无分配给你的账号，请联系管理员分配。</p>}
+        </section>
+      )}
       {saveError && (
         <div className="notice" role="alert">
           {saveError}
@@ -1555,13 +1586,13 @@ export default function Operations({
                 <div className="task-heading">
                   <div>
                     <h2>{t.name}</h2>
-                    <p>小红书演示账号 · 私信</p>
+                    <p>{t.senderAccountName || "历史账号"} · 小红书私信</p>
                   </div>
                   <StatusPill
                     status={taskStatus(
                       Object.values(t.results),
                       t.paused,
-                      w.accounts.小红书 !== "正常",
+                      !taskReady(t),
                     )}
                   />
                   <details className="task-menu">
@@ -1655,7 +1686,7 @@ export default function Operations({
                       {monitorStatus(
                         t.monitor,
                         undefined,
-                        w.accounts.小红书 !== "正常",
+                        !taskReady(t),
                       )}
                       {t.monitor.enabled && ` · ${t.monitor.interval} 分钟`}
                     </p>
@@ -1770,7 +1801,7 @@ export default function Operations({
                       className="button secondary"
                       disabled={
                         t.paused ||
-                        w.accounts.小红书 !== "正常" ||
+                        !taskReady(t) ||
                         monitorStatus(t.monitor) !== "等待检查"
                       }
                       onClick={() => checkReply(t, false)}
@@ -1781,7 +1812,7 @@ export default function Operations({
                       className="button secondary"
                       disabled={
                         t.paused ||
-                        w.accounts.小红书 !== "正常" ||
+                        !taskReady(t) ||
                         monitorStatus(t.monitor) !== "等待检查" ||
                         !t.ids.some(
                           (id) =>
@@ -1881,7 +1912,7 @@ export default function Operations({
       </Sheet>
       <Sheet
         open={settings}
-        title="账号与规则"
+        title="规则与话术"
         onClose={saveSettings}
         footer={
           <>
@@ -1892,74 +1923,6 @@ export default function Operations({
           </>
         }
       >
-        <section className="settings-section">
-          <h3>小红书账号</h3>
-          <div className="connected-account">
-            <span className="avatar tone-0">小</span>
-            <div>
-              <strong>
-                {w.accounts.小红书 === "正常"
-                  ? "小红书演示账号"
-                  : "尚未连接账号"}
-              </strong>
-              <p role="status">登录状态：{w.accounts.小红书}</p>
-            </div>
-          </div>
-          <p>状态由登录结果自动更新，无需手动填写。</p>
-          <div className="inline-actions">
-            <button className="button primary" onClick={startLogin}>
-              {w.accounts.小红书 === "正常" ? "重新登录" : "登录小红书"}
-            </button>
-            {w.accounts.小红书 === "正常" && (
-              <button
-                className="button secondary"
-                onClick={() => {
-                  if (
-                    window.confirm(
-                      "断开连接后暂停受影响的发送和回复检查，草稿与历史保留。是否继续？",
-                    )
-                  )
-                    patch({ accounts: { 小红书: "未授权" }, sender: "" });
-                }}
-              >
-                断开连接
-              </button>
-            )}
-          </div>
-          <p className="field-hint">当前为交互演示，登录结果不连接真实账号。</p>
-          <div className="account-status-guide">
-            <h4>异常状态与处理</h4>
-            <div>
-              <StatusPill status="已失效" />
-              <p>登录凭证已过期，需要重新登录。</p>
-              <button className="button text" onClick={startLogin}>
-                重新登录
-              </button>
-            </div>
-            <div>
-              <StatusPill status="受限" />
-              <p>平台限制了部分操作，暂停发送与回复检查。</p>
-              <button
-                className="button text"
-                onClick={() =>
-                  setNotice("请前往小红书查看账号限制原因，解除后再重新登录。")
-                }
-              >
-                查看处理说明
-              </button>
-            </div>
-            <div>
-              <StatusPill status="连接异常" />
-              <p>连接暂时失败，可保留任务和草稿后重试。</p>
-              <button
-                className="button text"
-                onClick={() => setNotice("已发起重试；任务和草稿保持不变。")}
-              >
-                重试连接
-              </button>
-            </div>
-          </div>
-        </section>
         <section className="settings-section">
           <h3>筛选规则</h3>
           <p>
@@ -2130,28 +2093,16 @@ export default function Operations({
             小红书账号
             <select
               aria-label="发送账号"
-              value={w.accounts.小红书 === "正常" ? w.sender : ""}
+              value={selectedAccount ? w.sender : ""}
               onChange={(e) => patch({ sender: e.target.value })}
             >
-              <option value="" disabled>
-                请选择可用账号
+              <option value="">
+                请选择已分配账号
               </option>
-              <option value="xhs" disabled={w.accounts.小红书 !== "正常"}>
-                小红书演示账号 · {w.accounts.小红书}
-              </option>
+              {personalAccounts.map(account => <option key={account.id} value={account.id} disabled={account.status !== "正常"}>{account.name} · {account.status}</option>)}
             </select>
           </label>
-          {w.accounts.小红书 !== "正常" && (
-            <p role="alert">
-              没有可用账号。
-              <button
-                className="button text"
-                onClick={() => openSettings(true)}
-              >
-                去设置
-              </button>
-            </p>
-          )}
+          {!senderReady && <p role="alert">{personalAccounts.length ? "请选择一个状态正常的已分配账号。" : "暂无分配给你的账号，请联系管理员。"}</p>}
           <h3>后续回复检查</h3>
           <label className="checkbox-label">
             <input
@@ -2283,15 +2234,7 @@ export default function Operations({
               </label>
               <p className="field-hint">{approachLabels[w.outreach.approach]} · 核对对应项目、经历和正文后确认发送。</p>
               <div className="review-tools">
-                <span>{`小红书 · ${w.accounts.小红书}`}</span>
-                {w.accounts.小红书 !== "正常" && (
-                  <button
-                    className="button text"
-                    onClick={() => openSettings(true)}
-                  >
-                    去设置
-                  </button>
-                )}
+                <span>{selectedAccount ? `小红书 · ${selectedAccount.name}` : "请在上方选择已分配账号"}</span>
                 <button
                   className="button text"
                   disabled={!identityOK}
@@ -2441,94 +2384,6 @@ export default function Operations({
         {!attentionRows.length && (
           <p className="table-empty">当前没有这类记录。</p>
         )}
-      </Sheet>
-      <Sheet
-        open={loginOpen}
-        title="登录小红书"
-        className="login-sheet"
-        onClose={closeLogin}
-        footer={
-          <button className="button secondary" onClick={closeLogin}>
-            取消登录
-          </button>
-        }
-      >
-        <p>
-          在这里扫码，并在手机上确认。登录结果由系统读取，扫码本身不代表已登录。
-        </p>
-        <div className="login-preview">
-          <span className="subtle-tag">演示 · 不可扫码</span>
-          <div
-            className="qr-placeholder"
-            aria-label="二维码展示占位，不是真实登录二维码"
-          >
-            <span>二维码展示区</span>
-            <small>接入 RPA 后显示当前登录二维码</small>
-          </div>
-          <strong role="status">
-            {loginStep === "waiting"
-              ? "等待扫码"
-              : loginStep === "scanned"
-                ? "已扫码，等待手机确认"
-                : loginStep === "expired"
-                  ? "二维码已过期"
-                  : "需要在登录窗口完成额外验证"}
-          </strong>
-          {loginStep === "expired" && (
-            <button
-              className="button secondary"
-              onClick={() => setLoginStep("waiting")}
-            >
-              刷新二维码
-            </button>
-          )}
-          {loginStep === "verification" && (
-            <button
-              className="button secondary"
-              onClick={() =>
-                setNotice(
-                  "演示未连接登录窗口；正式环境在这里交由用户完成验证。",
-                )
-              }
-            >
-              打开登录窗口
-            </button>
-          )}
-        </div>
-        <p className="field-hint">
-          二维码仅向当前用户临时展示，不存入名单或聊天。当前原型不读取验证码、不保存登录凭证。
-        </p>
-        <details className="demo-login-controls">
-          <summary>演示登录过程</summary>
-          <div className="inline-actions">
-            <button
-              className="button secondary"
-              disabled={loginStep !== "waiting"}
-              onClick={() => setLoginStep("scanned")}
-            >
-              模拟已扫码
-            </button>
-            <button
-              className="button primary"
-              disabled={loginStep !== "scanned"}
-              onClick={finishDemoLogin}
-            >
-              模拟收到登录成功结果
-            </button>
-            <button
-              className="button text"
-              onClick={() => setLoginStep("expired")}
-            >
-              模拟二维码过期
-            </button>
-            <button
-              className="button text"
-              onClick={() => setLoginStep("verification")}
-            >
-              模拟额外验证
-            </button>
-          </div>
-        </details>
       </Sheet>
       <Sheet
         open={Boolean(monitorEdit)}
@@ -2903,8 +2758,8 @@ export default function Operations({
         {task && person && (
           <>
             <div className="chat-context">
-              <span>发送账号 · 小红书演示账号</span>
-              <StatusPill status={w.accounts.小红书} />
+              <span>发送账号 · {task.senderAccountName || "历史账号"}</span>
+              <StatusPill status={taskAccount(task)?.status || "未授权"} />
             </div>
             <div className="monitor-strip">
               <div>
@@ -3031,7 +2886,7 @@ export default function Operations({
               !replyTask ||
               replyTask.paused ||
               Boolean(replyTask.followups[reply?.lead || 0]) ||
-              w.accounts.小红书 !== "正常" ||
+              !taskReady(replyTask) ||
               !identityOK ||
               Boolean(
                 replyTask && reply && replyTask.todos[reply.lead] !== "待确认",
@@ -3044,7 +2899,7 @@ export default function Operations({
                 !replyTask ||
                 replyTask.paused ||
                 replyTask.followups[reply.lead] ||
-                w.accounts.小红书 !== "正常" ||
+                !taskReady(replyTask) ||
                 !identityOK ||
                 replyTask.todos[reply.lead] !== "待确认" ||
                 (reply.contextChanged && !reply.reviewedLatest)

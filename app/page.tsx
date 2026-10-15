@@ -5,10 +5,12 @@ import Icon from "./Icon";
 import { demoLeads } from "./demo-data";
 
 export default function Home() {
-  const [view, setView] = useState<"screening" | "leads" | "workflow">(
+  const [view, setView] = useState<"screening" | "leads" | "workflow" | "accounts">(
     "screening",
   );
+  const [adminMode, setAdminMode] = useState(false);
   const [help, setHelp] = useState(false);
+  const switchRole = () => { setAdminMode(!adminMode); setView(adminMode ? "screening" : "accounts"); };
   return (
     <main className="console-shell">
       <aside className="console-nav">
@@ -20,8 +22,9 @@ export default function Home() {
             线索雷达<small>LEAD RADAR</small>
           </div>
         </a>
-        <p className="workspace-caption">社交线索工作台</p>
+        <p className="workspace-caption">{adminMode ? "管理侧 · 交互演示" : "社交线索工作台"}</p>
         <nav aria-label="主导航">
+          {adminMode ? <button className="active" aria-current="page" onClick={() => setView("accounts")}><Icon name="settings" />账号管理</button> : <>
           <button
             className={view === "screening" ? "active" : ""}
             aria-current={view === "screening" ? "page" : undefined}
@@ -46,6 +49,8 @@ export default function Home() {
             <Icon name="chat" />
             触达与跟进
           </button>
+          </>}
+          <button className="mobile-role-switch" aria-label={adminMode ? "返回个人侧" : "管理侧（演示）"} onClick={switchRole}>{adminMode ? "个人" : "管理"}</button>
         </nav>
         <div className="nav-bottom">
           <div className="demo-badge">
@@ -59,6 +64,9 @@ export default function Home() {
           <button onClick={() => setHelp(!help)}>
             <Icon name="info" size={17} /> 使用说明
           </button>
+          <button onClick={switchRole}>
+            <Icon name="settings" size={17} /> {adminMode ? "返回个人侧" : "切换管理侧（演示）"}
+          </button>
         </div>
       </aside>
       <section className="console-main" id="main">
@@ -70,10 +78,10 @@ export default function Home() {
                 ? "数据处理"
                 : view === "leads"
                   ? "历史名单"
-                  : "触达与跟进"}
+                  : view === "accounts" ? "账号管理" : "触达与跟进"}
             </strong>
           </div>
-          <span className="topbar-version">小红书 · 私信</span>
+          <span className="topbar-version">{adminMode ? "管理侧 · 演示" : "小红书 · 私信"}</span>
         </header>
         <div className="console-content">
           {help && (
@@ -81,7 +89,7 @@ export default function Home() {
               <div>
                 <strong>上传数据，查看结果，再确认发送</strong>
                 <p>
-                  字段识别与账号核验由后台处理；数据可独立保留，历史名单也可直接用于后续沟通。当前原型使用固定样本，没有连接文件解析、模型或社交平台。
+                  字段识别与账号核验由后台处理；个人侧只选择已分配账号。当前原型使用固定样本，没有连接文件解析、模型或社交平台。
                 </p>
               </div>
               <button
