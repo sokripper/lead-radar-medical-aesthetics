@@ -8,7 +8,7 @@ export function StatusPill({
   status: string;
   children?: ReactNode;
 }) {
-  const tone = /成功|已完成|正常/.test(status)
+  const tone = /成功|完成|正常|可解析/.test(status)
     ? "success"
     : /失败|受限|异常/.test(status)
       ? "danger"

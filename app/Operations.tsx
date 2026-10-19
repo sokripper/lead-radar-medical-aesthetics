@@ -32,6 +32,7 @@ import {
 import {
   type ScreeningRules,
   defaultRules,
+  restoreRules,
   rulesError,
   reviseRules,
   partitionResults,
@@ -61,6 +62,8 @@ import {
   readyRecipients,
   removeSubmitted,
   mergePreparedQueue,
+  reachabilityOf,
+  isContactable,
 } from "./operations-state";
 
 type View = "screening" | "leads" | "workflow" | "accounts";
@@ -68,9 +71,21 @@ type Platform = "小红书";
 type Batch = {
   id: number;
   name: string;
+  sourceTaskCode?: string;
   ids: number[];
   time: string;
   rules?: ScreeningRules;
+};
+type CollectionTaskStatus = "等待数据" | "可解析" | "解析中" | "解析完成";
+type CollectionTask = {
+  id: number;
+  name: string;
+  sourceTaskCode: string;
+  platform: Platform;
+  status: CollectionTaskStatus;
+  createdAt: string;
+  rules: ScreeningRules;
+  batchId?: number;
 };
 type Queue = {
   ids: number[];
@@ -105,6 +120,7 @@ type Workspace = {
   schema: number;
   batches: Batch[];
   batchId: number;
+  collectionTasks: CollectionTask[];
   grades: Record<number, Prospect["grade"]>;
   adjustments: Record<number, Adjustment[]>;
   failed: number[];
@@ -136,9 +152,10 @@ const initial = (leads: Prospect[]): Workspace => ({
   supplements: {},
   sender: "",
   dataState: "待处理",
-  schema: 5,
+  schema: 6,
   batches: [],
   batchId: 0,
+  collectionTasks: [],
   grades: Object.fromEntries(leads.map((l) => [l.id, l.grade])),
   adjustments: {},
   failed: [],
@@ -150,7 +167,7 @@ const initial = (leads: Prospect[]): Workspace => ({
   outreach: emptyOutreachProfile(),
   accounts: { 小红书: "未授权" },
   managedAccounts: demoAccounts(),
-  industry: "医美",
+  industry: "新媒体运营",
   region: "全国",
   monitor: emptyMonitoring(),
 });
@@ -161,6 +178,9 @@ const labels = {
   D: "排除",
   待判断: "待判断",
 };
+const sharedTasks = [
+  { code: "6b27c68f027e412680393da7b322516e", status: "已入库" },
+] as const;
 function Sheet({
   open,
   title,
@@ -233,15 +253,19 @@ export default function Operations({
   const [loaded, setLoaded] = useState(false);
   const [notice, setNotice] = useState("");
   const [saveError, setSaveError] = useState("");
-  const [filter, setFilter] = useState("AB");
+  const [filter, setFilter] = useState("CONTACTABLE");
   const [search, setSearch] = useState("");
   const [batchFilter, setBatchFilter] = useState("");
   const [regionFilter, setRegionFilter] = useState("");
   const [contactFilter, setContactFilter] = useState("");
-  const [file, setFile] = useState<File | null>(null);
-  const [inputCheckOpen, setInputCheckOpen] = useState(false);
-  const [worksheet, setWorksheet] = useState("");
   const [busy, setBusy] = useState(false);
+  const [createTaskOpen, setCreateTaskOpen] = useState(false);
+  const [editingCollectionTaskId, setEditingCollectionTaskId] = useState<number | null>(null);
+  const [collectionTaskDraft, setCollectionTaskDraft] = useState(() => ({
+    name: "",
+    sourceTaskCode: "",
+    rules: defaultRules(),
+  }));
   const [settings, setSettings] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [ruleDraft, setRuleDraft] = useState(defaultRules);
@@ -277,7 +301,6 @@ export default function Operations({
   } | null>(null);
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
-  const upload = useRef<HTMLInputElement>(null);
   const processingTimer = useRef<number | null>(null);
   const submitting = useRef(false);
   const patch = (x: Partial<Workspace>) => setW((old) => ({ ...old, ...x }));
@@ -289,11 +312,19 @@ export default function Operations({
   useEffect(() => {
     const restore = window.setTimeout(() => {
       try {
-        const raw = localStorage.getItem("lead-radar-workspace-5") || localStorage.getItem("lead-radar-workspace-4");
+        const resetRequested = new URLSearchParams(window.location.search).get("reset") === "1";
+        if (resetRequested) {
+          localStorage.removeItem("lead-radar-workspace-6");
+          localStorage.removeItem("lead-radar-workspace-5");
+          localStorage.removeItem("lead-radar-workspace-4");
+          localStorage.removeItem("lead-radar-reply-drafts-4");
+          window.history.replaceState({}, "", window.location.pathname);
+        }
+        const raw = localStorage.getItem("lead-radar-workspace-6") || localStorage.getItem("lead-radar-workspace-5") || localStorage.getItem("lead-radar-workspace-4");
         if (raw) {
           const x = JSON.parse(raw);
           if (
-            ![4, 5].includes(x.schema) ||
+            ![4, 5, 6].includes(x.schema) ||
             !Array.isArray(x.batches) ||
             !Array.isArray(x.tasks) ||
             !x.queue ||
@@ -303,13 +334,28 @@ export default function Operations({
           setW({
             ...initial(leads),
             ...x,
-            schema: 5,
+            schema: 6,
+            collectionTasks: Array.isArray(x.collectionTasks)
+              ? x.collectionTasks.map((task: CollectionTask) => ({
+                  ...task,
+                  platform: "小红书",
+                  rules: restoreRules(task.rules),
+                }))
+              : x.batches.map((batch: Batch) => ({
+                  id: batch.id,
+                  name: batch.name,
+                  sourceTaskCode: batch.sourceTaskCode || `legacy-${batch.id}`,
+                  platform: "小红书",
+                  status: "解析完成",
+                  createdAt: batch.time,
+                  rules: restoreRules(batch.rules || x.rules),
+                  batchId: batch.id,
+                })),
             managedAccounts: restoreManagedAccounts(x.managedAccounts),
-            rules: x.rules || {
-              ...defaultRules(),
-              industry: x.industry || "医美",
+            rules: restoreRules(x.rules || {
+              industry: x.industry || "新媒体运营",
               region: x.region || "全国",
-            },
+            }),
             supplements: x.supplements || {},
             sender: x.schema === 4 && x.sender === "xhs" ? "xhs-main" : x.sender || "",
             outreach: restoreOutreachProfile(x.outreach),
@@ -345,7 +391,7 @@ export default function Operations({
   useEffect(() => {
     if (!loaded) return;
     try {
-      localStorage.setItem("lead-radar-workspace-5", JSON.stringify(w));
+      localStorage.setItem("lead-radar-workspace-6", JSON.stringify(w));
     } catch {
       queueMicrotask(() => setSaveError("本地保存失败，刷新可能丢失编辑。"));
     }
@@ -371,10 +417,11 @@ export default function Operations({
       w.tasks.filter((t) => t.ids.includes(id)).map((t) => t.results[id]),
     );
   const occupied = w.tasks.flatMap((t) => t.ids);
-  const available = (id: number) =>
-    ["A", "B"].includes(w.grades[id]) &&
-    !w.failed.includes(id) &&
-    !occupied.includes(id);
+  const reachability = (lead: Prospect) => reachabilityOf(lead,w.grades[lead.id]);
+  const available = (id: number) => {
+    const lead=leads.find(item=>item.id===id);
+    return Boolean(lead&&isContactable(lead,w.grades[id])&&!w.failed.includes(id)&&!occupied.includes(id));
+  };
   const { completed, attention } = partitionResults(rows, w.grades, w.failed);
   const attentionRows = attention.filter(
     (l) =>
@@ -388,8 +435,8 @@ export default function Operations({
       (filter === "ALL" || filter === "FAILED"
         ? filter === "ALL" || w.failed.includes(l.id)
         : !w.failed.includes(l.id) &&
-          (filter === "AB"
-            ? ["A", "B"].includes(w.grades[l.id])
+          (filter === "CONTACTABLE"
+            ? isContactable(l,w.grades[l.id])
             : w.grades[l.id] === filter)) &&
       `${l.name}${l.context}${l.intent}${l.location}`.includes(search.trim()) &&
       (!batchFilter ||
@@ -415,7 +462,7 @@ export default function Operations({
   const taskAccount = (t: Task) => w.managedAccounts.find(account => account.id === t.senderAccountId);
   const taskReady = (t: Task) => accountReady(w.managedAccounts, t.senderAccountId || "");
   const ready = identityOK && senderReady
-    ? readyRecipients(leads, w.queue, w.grades, occupied, { 小红书: true }, copyPending.map(l => l.id)).filter(l => available(l.id))
+    ? readyRecipients(leads, w.queue, w.grades, occupied, { 小红书: true }, copyPending.map(l => l.id), leads.filter(l=>available(l.id)).map(l=>l.id)).filter(l => available(l.id))
     : [];
   const detailLead = leads.find((l) => l.id === detail);
   const task = w.tasks.find((t) => t.id === convo?.task);
@@ -435,24 +482,95 @@ export default function Operations({
   function message(l: Prospect) {
     return openingCopy(l, w.outreach);
   }
-  function chooseFile(f?: File) {
-    if (!f) return;
-    if (!/\.xlsx$/i.test(f.name)) {
-      patch({ dataState: "待补充" });
-      setNotice("请选择 Excel 文件。");
-      return;
-    }
-    if (f.size > 50 * 1024 * 1024) {
-      setNotice("文件选择演示仅接受 50 MB 以内文件。");
-      return;
-    }
-    setFile(f);
-    patch({ dataState: "待处理" });
+  function openCreateCollectionTask() {
+    setEditingCollectionTaskId(null);
+    setCollectionTaskDraft({ name: "", sourceTaskCode: "", rules: defaultRules() });
+    setCreateTaskOpen(true);
   }
-  function runSample() {
-    if (busy) return;
+  function openEditCollectionTask(task: CollectionTask) {
+    if (!["等待数据", "可解析"].includes(task.status)) return;
+    setEditingCollectionTaskId(task.id);
+    setCollectionTaskDraft({
+      name: task.name,
+      sourceTaskCode: task.sourceTaskCode,
+      rules: JSON.parse(JSON.stringify(task.rules)),
+    });
+    setCreateTaskOpen(true);
+  }
+  function createCollectionTask() {
+    const name = collectionTaskDraft.name.trim();
+    const code = collectionTaskDraft.sourceTaskCode.trim();
+    if (!name || !code || rulesError(collectionTaskDraft.rules)) return;
+    if (w.collectionTasks.some((task) => task.sourceTaskCode === code && task.id !== editingCollectionTaskId)) {
+      setNotice("该羚羊任务 ID 已创建，请直接查看现有任务。");
+      return;
+    }
+    const available = sharedTasks.some((task) => task.code === code);
+    if (editingCollectionTaskId !== null) {
+      setW((old) => ({
+        ...old,
+        collectionTasks: old.collectionTasks.map((task) => task.id === editingCollectionTaskId ? {
+          ...task,
+          name,
+          sourceTaskCode: code,
+          status: available ? "可解析" : "等待数据",
+          rules: JSON.parse(JSON.stringify(collectionTaskDraft.rules)),
+        } : task),
+      }));
+      setCreateTaskOpen(false);
+      setEditingCollectionTaskId(null);
+      setNotice("任务信息和业务规则已更新。");
+      return;
+    }
+    const id = Date.now();
+    setW((old) => ({
+      ...old,
+      collectionTasks: [{
+        id,
+        name,
+        sourceTaskCode: code,
+        platform: "小红书",
+        status: available ? "可解析" : "等待数据",
+        createdAt: new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" }),
+        rules: JSON.parse(JSON.stringify(collectionTaskDraft.rules)),
+      }, ...old.collectionTasks],
+    }));
+    setCreateTaskOpen(false);
+    setEditingCollectionTaskId(null);
+    setNotice(available ? "任务已创建，已检测到数据，可以开始解析。" : "任务已创建，将在数据入库后提醒解析。");
+  }
+  function refreshCollectionTask(task: CollectionTask) {
+    const available = sharedTasks.some((item) => item.code === task.sourceTaskCode);
+    if (!available) {
+      setNotice("暂未检测到完整数据，后台会继续检查。");
+      return;
+    }
+    setW((old) => ({
+      ...old,
+      collectionTasks: old.collectionTasks.map((item) => item.id === task.id ? { ...item, status: "可解析" } : item),
+    }));
+    setNotice("数据已就绪，可以开始解析。");
+  }
+  function runCollectionTask(task: CollectionTask) {
+    if (busy || task.status !== "可解析") return;
+    const existing = w.batches.find((batch) => batch.sourceTaskCode === task.sourceTaskCode);
+    if (existing) {
+      setW((old) => ({
+        ...old,
+        batchId: existing.id,
+        selected: [],
+        collectionTasks: old.collectionTasks.map((item) => item.id === task.id ? { ...item, status: "解析完成", batchId: existing.id } : item),
+      }));
+      setFilter("CONTACTABLE");
+      setNotice("该任务已完成解析，已切换到现有结果。");
+      return;
+    }
     setBusy(true);
-    patch({ dataState: "处理中" });
+    setW((old) => ({
+      ...old,
+      dataState: "处理中",
+      collectionTasks: old.collectionTasks.map((item) => item.id === task.id ? { ...item, status: "解析中" } : item),
+    }));
     processingTimer.current = window.setTimeout(() => {
       const id = Date.now();
       setW((old) => ({
@@ -460,14 +578,13 @@ export default function Operations({
         batches: [
           {
             id,
-            name: file
-              ? `${file.name}（示例预览）`
-              : `医美需求样本 ${old.batches.length + 1}`,
+            name: task.name,
+            sourceTaskCode: task.sourceTaskCode,
             ids: leads.map((l) => l.id),
             time: new Date().toLocaleString("zh-CN", {
               timeZone: "Asia/Shanghai",
             }),
-            rules: JSON.parse(JSON.stringify(old.rules)),
+            rules: JSON.parse(JSON.stringify(task.rules)),
           },
           ...old.batches,
         ],
@@ -475,17 +592,15 @@ export default function Operations({
         selected: [],
         failed: [8],
         dataState: "部分完成",
+        collectionTasks: old.collectionTasks.map((item) => item.id === task.id ? { ...item, status: "解析完成", batchId: id } : item),
       }));
       setBusy(false);
-      setFile(null);
-      setFilter("AB");
+      setFilter("CONTACTABLE");
       setSearch("");
       setBatchFilter("");
       setRegionFilter("");
       setContactFilter("");
-      setNotice(
-        "示例部分处理完成：有效结果已保留，另有待判断与处理失败记录。未读取真实文件。",
-      );
+      setNotice(`“${task.name}”已完成解析。`);
     }, 1000);
   }
   function prepare() {
@@ -830,11 +945,13 @@ export default function Operations({
   function exportList() {
     const data = exportRows(exportScope, rows, w.selected, visible);
     const csv = [
-      ["用户", "平台", "等级", "地区", "评论", "依据", "联系状态"],
+      ["用户", "平台", "意向等级", "业务场景", "触达建议", "地区", "评论", "依据", "联系状态"],
       ...data.map((l) => [
         l.name,
         platform(l),
         w.failed.includes(l.id) ? "处理失败" : w.grades[l.id],
+        l.businessScene || "待判断",
+        reachability(l),
         l.location,
         l.context,
         l.evidence,
@@ -885,7 +1002,7 @@ export default function Operations({
     setNotice(`已按“${approachLabels[w.outreach.approach]}”重新生成 ${candidates.length} 条；其他草稿保留。`);
   }
   function openRules() {
-    setRuleDraft({ ...w.rules, grades: { ...w.rules.grades } });
+    setRuleDraft({ ...w.rules, grades: { ...w.rules.grades }, contactableScenes:[...w.rules.contactableScenes] });
     setRulesOpen(true);
   }
   function saveRules() {
@@ -972,28 +1089,28 @@ export default function Operations({
           <div className="eyebrow">WORKSPACE</div>
           <h1>
             {view === "screening"
-              ? "数据处理"
+              ? "采集任务"
               : view === "leads"
                 ? "历史名单"
                 : "触达与跟进"}
           </h1>
           <p>
             {view === "screening"
-              ? "上传数据，查看结果，再决定下一步。"
+              ? "管理羚羊任务，数据就绪后开始解析。"
               : view === "leads"
                 ? "复用已有名单，查看联系记录。"
                 : "查看发送结果，处理新回复。"}
           </p>
         </div>
-        <button className="button secondary" onClick={() => openSettings()}>
+        {view !== "screening" && <button className="button secondary" onClick={() => openSettings()}>
           <Icon name="settings" size={17} />
           规则与话术
-        </button>
+        </button>}
       </div>
       <p className="prototype-note">
         演示工作区 · 个人侧仅使用已分配账号，数据处理与发送均为模拟，记录仅保存在当前浏览器。
       </p>
-      {view !== "leads" && (
+      {view === "workflow" && (
         <section className="surface personal-account-picker" aria-label="新任务使用账号">
           <div>
             <strong>新任务使用账号</strong>
@@ -1036,162 +1153,56 @@ export default function Operations({
       )}
       {view === "screening" && (
         <>
-          <section
-            className={`surface import-surface ${current ? "import-compact" : "import-start"}`}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => {
-              e.preventDefault();
-              chooseFile(e.dataTransfer.files[0]);
-            }}
-          >
-            {!current && (
-              <div className="upload-intro">
-                <span className="upload-emblem">
-                  <Icon name="upload" size={28} />
-                </span>
-                <h2>上传羚羊导出的 Excel</h2>
-                <p>整理帖子、评论和作者信息，先得到一份可使用的名单。</p>
+          <section className="surface collection-task-surface">
+            <div className="collection-task-heading">
+              <div>
+                <h2>任务列表</h2>
+                <p>在羚羊创建任务后，在这里登记任务 ID 并配置业务规则。</p>
               </div>
-            )}
-            {current && (
-              <div className="batch-info">
-                <Icon name="file" size={22} />
-                <div>
-                  <strong>{current.name}</strong>
-                  <small>
-                    {completed.length} 位已完成 · {attention.length} 位需要处理
-                  </small>
-                </div>
-              </div>
-            )}
-            <div className="inline-actions import-actions">
-              <button
-                className={`button ${current ? "secondary" : "primary"}`}
-                disabled={!loaded || busy}
-                onClick={() => upload.current?.click()}
-              >
-                {current ? "重新上传" : "选择数据文件"}
+              <button className="button primary create-task-button" disabled={!loaded} onClick={openCreateCollectionTask}>
+                <Icon name="plus" size={17} />新建任务
               </button>
-              <button
-                className="button text"
-                disabled={!loaded || busy}
-                onClick={() => setInputCheckOpen(true)}
-              >
-                查看输入异常处理
-              </button>
-              <button
-                className={`button ${file ? "primary" : "secondary"}`}
-                disabled={!loaded || busy}
-                onClick={runSample}
-              >
-                {busy
-                  ? "正在整理样本…"
-                  : file
-                    ? "预览示例结果"
-                    : "体验示例数据"}
-              </button>
-              {busy && (
-                <button
-                  className="button secondary"
-                  onClick={() => {
-                    if (processingTimer.current)
-                      clearTimeout(processingTimer.current);
-                    setBusy(false);
-                    patch({ dataState: "已取消" });
-                  }}
-                >
-                  取消处理
-                </button>
-              )}
-              {current && (
-                <select
-                  aria-label="切换数据批次"
-                  value={w.batchId}
-                  onChange={(e) => {
-                    patch({ batchId: Number(e.target.value), selected: [] });
-                    setFilter("AB");
-                  }}
-                >
-                  {w.batches.map((b) => (
-                    <option value={b.id} key={b.id}>
-                      {b.name}
-                    </option>
-                  ))}
-                </select>
-              )}
             </div>
-            {(file ||
-              busy ||
-              w.dataState === "已取消" ||
-              w.dataState === "待补充") && (
-              <div className="import-feedback" role="status">
-                {file && <span>{file.name}</span>}
-                <StatusPill status={w.dataState} />
-              </div>
-            )}
-            {!current && (
-              <p className="field-hint">
-                文件入口仅预览固定样本，不读取真实文件内容。
-              </p>
-            )}
-          </section>
-          <section
-            className={`surface screening-rules ${current ? "rules-compact" : ""}`}
-          >
-            {current ? (
-              <div className="rules-short">
-                <Disclosure
-                  title={`本批次筛选规则 · ${(current.rules || w.rules).industry} · ${(current.rules || w.rules).region}`}
-                >
-                  <RuleSummary rules={current.rules || w.rules} />
-                </Disclosure>
-                <button
-                  className="button secondary"
-                  disabled={!loaded}
-                  onClick={openRules}
-                >
-                  调整筛选规则
-                </button>
+            {!w.collectionTasks.length ? (
+              <div className="collection-task-empty">
+                <span className="upload-emblem"><Icon name="data" size={28} /></span>
+                <h3>先新建一个采集任务</h3>
+                <p>填写羚羊任务 ID、任务名称和业务规则。数据入库后，这里会提示可解析。</p>
+                <button className="button primary create-task-button large" onClick={openCreateCollectionTask}>新建任务</button>
               </div>
             ) : (
-              <>
-                <div className="section-heading">
-                  <div>
-                    <h2>本次筛选规则</h2>
-                    <p>
-                      {w.rules.industry} · {w.rules.region} · {w.rules.audience}
-                    </p>
-                  </div>
-                  <button
-                    className="button secondary"
-                    disabled={!loaded}
-                    onClick={openRules}
-                  >
-                    调整筛选规则
-                  </button>
-                </div>
-                <RuleSummary rules={w.rules} />
-              </>
-            )}
-            {current?.rules && current.rules.revision !== w.rules.revision && (
-              <p className="rule-change-note">
-                已保存新的筛选规则，将用于之后的分析。当前批次结果保持不变。
-              </p>
+              <div className="collection-task-table-wrap">
+                <table className="collection-task-table">
+                  <thead><tr><th>任务名称</th><th>羚羊任务 ID</th><th>业务规则</th><th>创建时间</th><th>状态</th><th>操作</th></tr></thead>
+                  <tbody>
+                    {w.collectionTasks.map((task) => (
+                      <tr key={task.id} className={task.batchId === w.batchId ? "active" : ""}>
+                        <td><strong>{task.name}</strong><small>{task.platform}</small></td>
+                        <td><code>{task.sourceTaskCode}</code></td>
+                        <td><strong>{task.rules.industry}</strong><small>{task.rules.audience}</small></td>
+                        <td>{task.createdAt}</td>
+                        <td><StatusPill status={task.status} /></td>
+                        <td className="collection-task-actions">
+                          {["等待数据", "可解析"].includes(task.status) && <button className="button text" onClick={() => openEditCollectionTask(task)}>编辑</button>}
+                          {task.status === "等待数据" && <button className="button text" onClick={() => refreshCollectionTask(task)}>刷新状态</button>}
+                          {task.status === "可解析" && <button className="button primary" disabled={busy} onClick={() => runCollectionTask(task)}>开始解析</button>}
+                          {task.status === "解析中" && <button className="button secondary" disabled>解析中…</button>}
+                          {task.status === "解析完成" && <button className="button text" onClick={() => task.batchId && patch({ batchId: task.batchId, selected: [] })}>查看结果</button>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </section>
+          {current && <section className="surface screening-rules rules-compact">
+            <Disclosure title={`当前结果 · ${current.name} · 查看任务规则`}>
+              <RuleSummary rules={current.rules || w.rules} />
+            </Disclosure>
+          </section>}
         </>
       )}
-      <input
-        className="visually-hidden"
-        type="file"
-        ref={upload}
-        accept=".xlsx"
-        aria-label="选择数据文件"
-        onChange={(e) => {
-          chooseFile(e.target.files?.[0]);
-          e.target.value = "";
-        }}
-      />
       {view !== "workflow" &&
         (rows.length ? (
           <section className="surface result-surface">
@@ -1199,7 +1210,8 @@ export default function Operations({
               <div>
                 <h2>
                   {view === "leads" ? "历史名单" : "筛选结果"}{" "}
-                  <span className="count">{completed.length}</span>
+                  <span className="count">{visible.length}</span>
+                  {visible.length !== completed.length && <small className="result-total"> / 共 {completed.length}</small>}
                 </h2>
               </div>
               <button
@@ -1231,7 +1243,7 @@ export default function Operations({
             <div className="result-toolbar">
               <div className="filter-tabs">
                 {[
-                  ["AB", "A/B 潜客"],
+                  ["CONTACTABLE", "可触达"],
                   ["ALL", "全部"],
                   ["A", "A 高意向"],
                   ["B", "B 有需求"],
@@ -1333,6 +1345,15 @@ export default function Operations({
             )}
             <div className="table-wrap">
               <table className="lead-table">
+                <colgroup>
+                  <col className="select-col" />
+                  <col className="user-col" />
+                  <col className="grade-col" />
+                  <col className="scene-col" />
+                  <col className="need-col" />
+                  <col className="region-col" />
+                  <col className="action-col" />
+                </colgroup>
                 <thead>
                   <tr>
                     <th>
@@ -1359,6 +1380,7 @@ export default function Operations({
                     </th>
                     <th>用户</th>
                     <th>意向等级</th>
+                    <th>业务场景</th>
                     <th>需求与依据</th>
                     <th>地区</th>
                     <th>操作</th>
@@ -1424,6 +1446,14 @@ export default function Operations({
                             </select>
                           </label>
                         )}
+                      </td>
+                      <td>
+                        <div className="scene-cell">
+                          <strong>{l.businessScene || "待判断"}</strong>
+                          <span className={`touch-tag touch-${reachability(l)==='优先触达'?'priority':reachability(l)==='建议触达'?'recommended':reachability(l)==='探索触达'?'explore':'hold'}`}>
+                            {reachability(l)}
+                          </span>
+                        </div>
                       </td>
                       <td>
                         <div className="need">
@@ -1499,7 +1529,7 @@ export default function Operations({
               className="button primary"
               onClick={() => navigate("screening")}
             >
-              去上传数据
+              去处理数据
             </button>
           </section>
         ) : null)}
@@ -1835,82 +1865,6 @@ export default function Operations({
         </>
       )}
       <Sheet
-        open={inputCheckOpen}
-        title="数据输入检查"
-        subtitle="上传后发现问题时，按提示修正再继续处理"
-        onClose={() => setInputCheckOpen(false)}
-        footer={
-          <button
-            className="button primary"
-            disabled={!worksheet}
-            onClick={() => {
-              setInputCheckOpen(false);
-              setNotice(`已选择工作表“${worksheet}”，可以继续处理。`);
-            }}
-          >
-            确认工作表
-          </button>
-        }
-      >
-        <div className="input-issue-grid">
-          <section>
-            <StatusPill status="文件损坏" />
-            <h3>Excel 无法读取</h3>
-            <p>文件可能已损坏或格式不完整，请检查原文件后重新上传。</p>
-            <button
-              className="button secondary"
-              onClick={() => {
-                setInputCheckOpen(false);
-                upload.current?.click();
-              }}
-            >
-              重新选择文件
-            </button>
-          </section>
-          <section>
-            <StatusPill status="字段缺失" />
-            <h3>缺少必填字段</h3>
-            <p>缺少：用户昵称、评论内容、原帖链接。补齐后再上传。</p>
-            <button
-              className="button secondary"
-              onClick={() => setNotice("字段要求：用户昵称、评论内容、原帖链接。")}
-            >
-              查看字段要求
-            </button>
-          </section>
-          <section>
-            <StatusPill status="重复批次" />
-            <h3>发现重复导入</h3>
-            <p>该文件与已有批次内容一致，避免重复产生名单和联系记录。</p>
-            <button
-              className="button secondary"
-              onClick={() => {
-                setInputCheckOpen(false);
-                navigate("leads");
-              }}
-            >
-              查看已有批次
-            </button>
-          </section>
-          <section className="worksheet-choice">
-            <StatusPill status="待选择" />
-            <h3>检测到多个工作表</h3>
-            <p>请选择本次需要处理的数据工作表。</p>
-            {["医美评论_本周", "医美评论_上周", "汇总说明"].map((name) => (
-              <label key={name}>
-                <input
-                  type="radio"
-                  name="worksheet"
-                  checked={worksheet === name}
-                  onChange={() => setWorksheet(name)}
-                />
-                {name}
-              </label>
-            ))}
-          </section>
-        </div>
-      </Sheet>
-      <Sheet
         open={settings}
         title="规则与话术"
         onClose={saveSettings}
@@ -1926,9 +1880,10 @@ export default function Operations({
         <section className="settings-section">
           <h3>筛选规则</h3>
           <p>
-            {w.rules.industry} · {w.rules.region}
+            {w.rules.industry} · {w.rules.audience}
           </p>
-          <p>{w.rules.audience}</p>
+          <p>{w.rules.offering}</p>
+          <p>{w.rules.businessNeeds}</p>
           <button className="button secondary" onClick={openRules}>
             查看和调整筛选规则
           </button>
@@ -1979,7 +1934,7 @@ export default function Operations({
               <option value="哈喽">哈喽</option>
             </select>
           </label>
-          <p className="field-hint">按沟通对象选择；不确定“姐妹”是否适用时用“哈喽”，不根据医美需求判断性别。</p>
+          <p className="field-hint">按沟通对象选择；不确定“姐妹”是否适用时使用中性称呼“哈喽”。</p>
           <fieldset className="settings-section">
             <legend>批量开场方式</legend>
             {(["experience", "cooperation"] as const).map(approach => (
@@ -2251,6 +2206,57 @@ export default function Operations({
           ))}
       </Sheet>
       <Sheet
+        open={createTaskOpen}
+        wide
+        title={editingCollectionTaskId === null ? "新建采集任务" : "编辑采集任务"}
+        onClose={() => { setCreateTaskOpen(false); setEditingCollectionTaskId(null); }}
+        footer={
+          <>
+            <button className="button secondary" onClick={() => { setCreateTaskOpen(false); setEditingCollectionTaskId(null); }}>取消</button>
+            <button
+              className="button primary"
+              disabled={!collectionTaskDraft.name.trim() || !collectionTaskDraft.sourceTaskCode.trim() || Boolean(rulesError(collectionTaskDraft.rules))}
+              onClick={createCollectionTask}
+            >
+              {editingCollectionTaskId === null ? "创建任务" : "保存修改"}
+            </button>
+          </>
+        }
+      >
+        <p>{editingCollectionTaskId === null ? "先在羚羊完成采集任务创建，再将任务 ID 和本次业务信息登记到这里。" : "数据解析前可修改任务信息和业务规则；开始解析后将锁定本次配置。"}</p>
+        <div className="collection-task-form">
+          <div className="collection-task-basics">
+            <label className="field">
+              任务中文名称
+              <input
+                aria-label="任务中文名称"
+                placeholder="例如：美业客户线索采集"
+                value={collectionTaskDraft.name}
+                onChange={(event) => setCollectionTaskDraft((old) => ({ ...old, name: event.target.value }))}
+              />
+            </label>
+            <label className="field">
+              羚羊任务 ID
+              <input
+                aria-label="羚羊任务 ID"
+                placeholder="粘贴羚羊平台生成的任务 ID"
+                value={collectionTaskDraft.sourceTaskCode}
+                onChange={(event) => setCollectionTaskDraft((old) => ({ ...old, sourceTaskCode: event.target.value }))}
+              />
+            </label>
+          </div>
+          <div className="form-section-title">
+            <h3>本次业务规则</h3>
+            <p>规则与该任务绑定，数据就绪后可直接解析。</p>
+          </div>
+          <RuleFields
+            value={collectionTaskDraft.rules}
+            onChange={(rules) => setCollectionTaskDraft((old) => ({ ...old, rules }))}
+          />
+          {rulesError(collectionTaskDraft.rules) && <p role="alert">{rulesError(collectionTaskDraft.rules)}</p>}
+        </div>
+      </Sheet>
+      <Sheet
         open={rulesOpen}
         wide
         title="调整筛选规则"
@@ -2273,10 +2279,7 @@ export default function Operations({
           </>
         }
       >
-        <p>修改用于之后的分析，已有结果、人工判断和任务内容不变。</p>
-        <p className="field-hint">
-          当前原型保存规则及批次快照，示例分类固定；未接入模型分析。
-        </p>
+        <p>填写业务信息即可。系统会自动应用通用分级和排除规则，修改后仅影响之后处理的数据。</p>
         <RuleFields value={ruleDraft} onChange={setRuleDraft} />
         {rulesError(ruleDraft) && <p role="alert">{rulesError(ruleDraft)}</p>}
       </Sheet>
@@ -2516,6 +2519,14 @@ export default function Operations({
               />
               <StatusPill status={contact(detailLead.id)} />
             </div>
+            <section className="detail-section detail-reach">
+              <h3>业务场景与触达建议</h3>
+              <p>
+                <strong>{detailLead.businessScene || "待判断"}</strong>
+                <span className={`touch-tag touch-${reachability(detailLead)==='优先触达'?'priority':reachability(detailLead)==='建议触达'?'recommended':reachability(detailLead)==='探索触达'?'explore':'hold'}`}>{reachability(detailLead)}</span>
+              </p>
+              <small>触达建议与意向等级分开判断，便于保留可承接的间接需求。</small>
+            </section>
             <section className="detail-section">
               <h3>为什么推荐这位用户</h3>
               <p>{detailLead.evidence}</p>

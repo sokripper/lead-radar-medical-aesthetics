@@ -2,7 +2,18 @@ export type Prospect = {
   id: number; name: string; handle: string; grade: 'A' | 'B' | 'C' | 'D' | '待判断'; score: number;
   intent: string; context: string; evidence: string; location: string;
   status: string; source: string; accountId: string; message: string;
+  businessScene?: '服务合作'|'达人投放'|'招聘运营'|'运营问题'|'泛讨论'|'推广广告'|'待判断';
+  reachability?: '优先触达'|'建议触达'|'探索触达'|'暂不触达';
 };
+export function reachabilityOf(lead:Pick<Prospect,'grade'|'reachability'>,grade:Prospect['grade']=lead.grade){
+  if(lead.reachability)return lead.reachability;
+  if(grade==='A')return '优先触达' as const;
+  if(grade==='B')return '建议触达' as const;
+  return '暂不触达' as const;
+}
+export function isContactable(lead:Pick<Prospect,'grade'|'reachability'>,grade:Prospect['grade']=lead.grade){
+  return grade!=='D'&&grade!=='待判断'&&reachabilityOf(lead,grade)!=='暂不触达';
+}
 export type SendStatus = '待执行' | '执行中' | '发送成功' | '发送失败' | '结果待核实' | '已取消';
 export const accountStates = ['未授权','授权中','正常','已失效','受限','连接异常'] as const;
 export type AccountStatus = typeof accountStates[number];
@@ -99,9 +110,10 @@ export function readyRecipients<T extends { id: number; source: string }>(
   leads: T[], queue: { ids:number[]; blocked:number[]; included:number[]; drafts:Record<number,string> },
   grades: Record<number,Prospect['grade']>, contacted: number[], accounts: Record<'小红书',boolean>,
   unready: number[] = [],
+  contactable?: number[],
 ) {
   return leads.filter((lead) => queue.ids.includes(lead.id) && !queue.blocked.includes(lead.id)
-    && queue.included.includes(lead.id) && ['A','B'].includes(grades[lead.id])
+    && queue.included.includes(lead.id) && (contactable?contactable.includes(lead.id):['A','B'].includes(grades[lead.id]))
     && !contacted.includes(lead.id) && lead.source.includes('小红书') && accounts['小红书']
     && !unready.includes(lead.id) && Boolean(queue.drafts[lead.id]?.trim()));
 }

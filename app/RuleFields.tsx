@@ -1,43 +1,19 @@
 "use client";
-import { type ScreeningRules, specialRules } from "./workflow-config";
-const names = { A: "A 高意向", B: "B 有需求", C: "C 弱意向", D: "D 排除" };
+import { type ScreeningRules } from "./workflow-config";
 export function RuleSummary({ rules }: { rules: ScreeningRules }) {
   return (
     <>
-      <p className="rule-audience">
-        {rules.industry} · {rules.region} · {rules.audience}
-      </p>
-      <div className="rule-cards">
-        {(Object.keys(names) as (keyof typeof names)[]).map((g) => (
-          <div key={g} className={`rule-card rule-${g}`}>
-            <strong>{names[g]}</strong>
-            <p>{rules.grades[g]}</p>
-          </div>
-        ))}
+      <div className="business-rule-summary">
+        <div><span>我们提供</span><strong>{rules.offering}</strong></div>
+        <div><span>目标客户</span><strong>{rules.audience}</strong></div>
+        <div><span>客户需求</span><strong>{rules.businessNeeds}</strong></div>
+        {rules.region.trim() && <div><span>地区范围</span><strong>{rules.region}</strong></div>}
       </div>
-      <details className="special-rules">
-        <summary>查看特殊情况、排除项和正反例</summary>
-        <dl>
-          {specialRules.map(([name, text]) => (
-            <div key={name}>
-              <dt>{name}</dt>
-              <dd>{text}</dd>
-            </div>
-          ))}
-          <div>
-            <dt>排除项</dt>
-            <dd>{rules.exclusions}</dd>
-          </div>
-          <div>
-            <dt>正例</dt>
-            <dd>{rules.positive || "未补充"}</dd>
-          </div>
-          <div>
-            <dt>反例</dt>
-            <dd>{rules.negative || "未补充"}</dd>
-          </div>
-        </dl>
-      </details>
+      <div className="system-rule-note">
+        <strong>系统自动判断</strong>
+        <p>结合行业相关性、身份匹配度、需求明确度和行动信号，给出意向等级与触达建议。</p>
+      </div>
+      {rules.exclusions.trim() && <p className="additional-exclusion"><strong>补充排除：</strong>{rules.exclusions}</p>}
     </>
   );
 }
@@ -51,7 +27,7 @@ export function RuleFields({
   return (
     <div className="rule-editor">
       <label className="field">
-        目标行业
+        业务行业
         <input
           aria-label="规则目标行业"
           value={value.industry}
@@ -59,59 +35,45 @@ export function RuleFields({
         />
       </label>
       <label className="field">
-        想找什么人
+        我们提供什么产品或服务
         <textarea
-          aria-label="目标人群"
+          aria-label="提供的产品或服务"
+          value={value.offering}
+          onChange={(e) => onChange({ ...value, offering: e.target.value })}
+        />
+      </label>
+      <label className="field">
+        想找什么样的客户
+        <textarea
+          aria-label="目标客户"
           value={value.audience}
           onChange={(e) => onChange({ ...value, audience: e.target.value })}
         />
       </label>
       <label className="field">
-        地区范围
+        客户可能有哪些业务需求
+        <textarea
+          aria-label="客户业务需求"
+          value={value.businessNeeds}
+          onChange={(e) => onChange({ ...value, businessNeeds: e.target.value })}
+        />
+      </label>
+      <label className="field compact-field">
+        地区范围（选填）
         <input
           aria-label="规则地区范围"
           value={value.region}
           onChange={(e) => onChange({ ...value, region: e.target.value })}
         />
       </label>
-      {(Object.keys(names) as (keyof typeof names)[]).map((g) => (
-        <label key={g} className="field">
-          {names[g]}
-          <textarea
-            aria-label={`${g} 类判断标准`}
-            value={value.grades[g]}
-            onChange={(e) =>
-              onChange({
-                ...value,
-                grades: { ...value.grades, [g]: e.target.value },
-              })
-            }
-          />
-        </label>
-      ))}
-      <label className="field">
-        排除哪些人
+      <label className="field compact-field">
+        补充排除对象（选填）
         <textarea
-          aria-label="排除项"
+          aria-label="补充排除对象"
           value={value.exclusions}
           onChange={(e) => onChange({ ...value, exclusions: e.target.value })}
         />
-      </label>
-      <label className="field">
-        符合的例子
-        <textarea
-          aria-label="正例"
-          value={value.positive}
-          onChange={(e) => onChange({ ...value, positive: e.target.value })}
-        />
-      </label>
-      <label className="field">
-        不符合的例子
-        <textarea
-          aria-label="反例"
-          value={value.negative}
-          onChange={(e) => onChange({ ...value, negative: e.target.value })}
-        />
+        <small>系统已内置通用排除规则，这里只需补充本业务的特殊情况。</small>
       </label>
     </div>
   );

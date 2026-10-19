@@ -88,9 +88,9 @@ export default function Home() {
           {help && (
             <section className="help-strip">
               <div>
-                <strong>上传数据，查看结果，再确认发送</strong>
+                <strong>从共享库筛选线索，确认后再触达</strong>
                 <p>
-                  字段识别与账号核验由后台处理；个人侧只选择已分配账号。当前原型使用固定样本，没有连接文件解析、模型或社交平台。
+                  个人侧只处理已入库数据并选择已分配账号。当前原型使用固定样本，未连接共享库、模型或社交平台。
                 </p>
               </div>
               <button

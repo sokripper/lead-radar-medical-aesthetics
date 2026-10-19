@@ -2,9 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {emptyOutreachProfile,restoreOutreachProfile,matchingExperience,openingCopy,followupCopy,openingTemplates,outreachIssue,outreachKey} from '../app/outreach-copy.ts';
 import {readyRecipients,removeSubmitted,mergePreparedQueue} from '../app/operations-state.ts';
-import {demoLeads} from '../app/demo-data.ts';
-
-const lead=id=>demoLeads.find(l=>l.id===id);
+const fixtures=[
+  {id:1,intent:'超声炮 / 面部提升',context:'想做超声炮，有机构推荐吗？',location:'上海',source:'小红书评论'},
+  {id:2,intent:'法令纹填充',context:'正在比较材料，怕做完很假。',location:'杭州',source:'小红书评论'},
+  {id:3,intent:'双眼皮',context:'做完多久能上班，会肿吗？',location:'未知',source:'小红书评论'},
+  {id:4,intent:'皮秒',context:'皮秒去痘印有效吗，要做几次？',location:'南京',source:'小红书评论'},
+];
+const lead=id=>fixtures.find(l=>l.id===id);
 const profile=(approach='experience')=>({...emptyOutreachProfile(),approach,project:'超声炮、法令纹填充、双眼皮、皮秒',experience:openingTemplates[approach],experienceConfirmed:true});
 const queue=()=>({ids:[],blocked:[],included:[],drafts:{},edited:[],copyKeys:{}});
 
