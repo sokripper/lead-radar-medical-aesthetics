@@ -77,6 +77,7 @@ type Batch = {
   rules?: ScreeningRules;
 };
 type CollectionTaskStatus = "等待数据" | "可解析" | "解析中" | "解析完成";
+type TaskWorkspaceTab = "overview" | "results" | "attention" | "rules";
 type CollectionTask = {
   id: number;
   name: string;
@@ -181,6 +182,24 @@ const labels = {
 const sharedTasks = [
   { code: "6b27c68f027e412680393da7b322516e", status: "已入库" },
 ] as const;
+const taskStatusCopy: Record<CollectionTaskStatus, { title: string; detail: string }> = {
+  等待数据: {
+    title: "等待共享库数据入库",
+    detail: "任务已登记。系统将按羚羊任务 ID 检查数据，入库前可以修改任务信息和业务规则。",
+  },
+  可解析: {
+    title: "数据已就绪，可以开始解析",
+    detail: "开始前仍可核对任务信息和业务规则；开始解析后，本次规则将锁定为任务快照。",
+  },
+  解析中: {
+    title: "正在解析任务数据",
+    detail: "系统正在执行去重、身份整理和意向判断。可以离开本页，稍后从任务列表再次进入查看。",
+  },
+  解析完成: {
+    title: "解析完成，可以处理结果",
+    detail: "筛选结果、需要处理的记录和本次规则快照均保留在当前任务内。",
+  },
+};
 function Sheet({
   open,
   title,
@@ -261,6 +280,8 @@ export default function Operations({
   const [busy, setBusy] = useState(false);
   const [createTaskOpen, setCreateTaskOpen] = useState(false);
   const [editingCollectionTaskId, setEditingCollectionTaskId] = useState<number | null>(null);
+  const [activeCollectionTaskId, setActiveCollectionTaskId] = useState<number | null>(null);
+  const [taskWorkspaceTab, setTaskWorkspaceTab] = useState<TaskWorkspaceTab>("overview");
   const [collectionTaskDraft, setCollectionTaskDraft] = useState(() => ({
     name: "",
     sourceTaskCode: "",
@@ -408,7 +429,10 @@ export default function Operations({
     }
   }, [loaded, replyDrafts]);
   const pool = [...new Set(w.batches.flatMap((b) => b.ids))];
-  const current = w.batches.find((b) => b.id === w.batchId);
+  const activeCollectionTask = w.collectionTasks.find((task) => task.id === activeCollectionTaskId);
+  const current = view === "screening"
+    ? w.batches.find((batch) => batch.id === activeCollectionTask?.batchId)
+    : w.batches.find((batch) => batch.id === w.batchId);
   const rows = leads.filter((l) =>
     (view === "leads" ? pool : current?.ids || []).includes(l.id),
   );
@@ -487,6 +511,19 @@ export default function Operations({
     setCollectionTaskDraft({ name: "", sourceTaskCode: "", rules: defaultRules() });
     setCreateTaskOpen(true);
   }
+  function openCollectionTask(task: CollectionTask) {
+    setActiveCollectionTaskId(task.id);
+    setTaskWorkspaceTab(task.status === "解析完成" ? "results" : "overview");
+    setFilter("CONTACTABLE");
+    setSearch("");
+    setAttentionFilter("ALL");
+    if (task.batchId) patch({ batchId: task.batchId, selected: [] });
+  }
+  function closeCollectionTask() {
+    setActiveCollectionTaskId(null);
+    setTaskWorkspaceTab("overview");
+    patch({ selected: [] });
+  }
   function openEditCollectionTask(task: CollectionTask) {
     if (!["等待数据", "可解析"].includes(task.status)) return;
     setEditingCollectionTaskId(task.id);
@@ -553,6 +590,8 @@ export default function Operations({
   }
   function runCollectionTask(task: CollectionTask) {
     if (busy || task.status !== "可解析") return;
+    setActiveCollectionTaskId(task.id);
+    setTaskWorkspaceTab("overview");
     const existing = w.batches.find((batch) => batch.sourceTaskCode === task.sourceTaskCode);
     if (existing) {
       setW((old) => ({
@@ -562,6 +601,7 @@ export default function Operations({
         collectionTasks: old.collectionTasks.map((item) => item.id === task.id ? { ...item, status: "解析完成", batchId: existing.id } : item),
       }));
       setFilter("CONTACTABLE");
+      setTaskWorkspaceTab("results");
       setNotice("该任务已完成解析，已切换到现有结果。");
       return;
     }
@@ -596,6 +636,7 @@ export default function Operations({
       }));
       setBusy(false);
       setFilter("CONTACTABLE");
+      setTaskWorkspaceTab("results");
       setSearch("");
       setBatchFilter("");
       setRegionFilter("");
@@ -1089,14 +1130,16 @@ export default function Operations({
           <div className="eyebrow">WORKSPACE</div>
           <h1>
             {view === "screening"
-              ? "采集任务"
+              ? activeCollectionTask?.name || "采集任务"
               : view === "leads"
                 ? "历史名单"
                 : "触达与跟进"}
           </h1>
           <p>
             {view === "screening"
-              ? "管理羚羊任务，数据就绪后开始解析。"
+              ? activeCollectionTask
+                ? `羚羊任务 ID：${activeCollectionTask.sourceTaskCode}`
+                : "管理羚羊任务，数据就绪后开始解析。"
               : view === "leads"
                 ? "复用已有名单，查看联系记录。"
                 : "查看发送结果，处理新回复。"}
@@ -1153,57 +1196,137 @@ export default function Operations({
       )}
       {view === "screening" && (
         <>
-          <section className="surface collection-task-surface">
-            <div className="collection-task-heading">
+          {!activeCollectionTask ? (
+            <section className="surface collection-task-surface">
+              <div className="collection-task-heading">
+                <div>
+                  <h2>任务列表</h2>
+                  <p>每个任务都有独立的数据、业务规则和处理记录。点击任务进入工作区。</p>
+                </div>
+                <button className="button primary create-task-button" disabled={!loaded} onClick={openCreateCollectionTask}>
+                  <Icon name="plus" size={17} />新建任务
+                </button>
+              </div>
+              {!w.collectionTasks.length ? (
+                <div className="collection-task-empty">
+                  <span className="upload-emblem"><Icon name="data" size={28} /></span>
+                  <h3>先新建一个采集任务</h3>
+                  <p>填写羚羊任务 ID、任务名称和业务规则。数据入库后，这里会提示可解析。</p>
+                  <button className="button primary create-task-button large" onClick={openCreateCollectionTask}>新建任务</button>
+                </div>
+              ) : (
+                <div className="collection-task-table-wrap">
+                  <table className="collection-task-table">
+                    <thead><tr><th>任务名称</th><th>羚羊任务 ID</th><th>业务规则</th><th>创建时间</th><th>状态</th><th>操作</th></tr></thead>
+                    <tbody>
+                      {w.collectionTasks.map((task) => (
+                        <tr key={task.id}>
+                          <td>
+                            <button className="task-name-link" onClick={() => openCollectionTask(task)}>{task.name}</button>
+                            <small>{task.platform}</small>
+                          </td>
+                          <td><code>{task.sourceTaskCode}</code></td>
+                          <td><strong>{task.rules.industry}</strong><small>{task.rules.audience}</small></td>
+                          <td>{task.createdAt}</td>
+                          <td><StatusPill status={task.status} /></td>
+                          <td className="collection-task-actions">
+                            <button className="button text" onClick={() => openCollectionTask(task)}>进入任务</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+          ) : (
+            <section className="surface task-workspace">
+              <div className="task-workspace-bar">
+                <button className="button text back-to-tasks" onClick={closeCollectionTask}>← 返回任务列表</button>
+                <div className="task-workspace-actions">
+                  {["等待数据", "可解析"].includes(activeCollectionTask.status) && (
+                    <button className="button secondary" onClick={() => openEditCollectionTask(activeCollectionTask)}>编辑任务</button>
+                  )}
+                  {activeCollectionTask.status === "等待数据" && (
+                    <button className="button secondary" onClick={() => refreshCollectionTask(activeCollectionTask)}>刷新状态</button>
+                  )}
+                  {activeCollectionTask.status === "可解析" && (
+                    <button className="button primary" disabled={busy} onClick={() => runCollectionTask(activeCollectionTask)}>开始解析</button>
+                  )}
+                </div>
+              </div>
+              <div className="task-workspace-summary">
+                <div><span>状态</span><StatusPill status={activeCollectionTask.status} /></div>
+                <div><span>平台</span><strong>{activeCollectionTask.platform}</strong></div>
+                <div><span>创建时间</span><strong>{activeCollectionTask.createdAt}</strong></div>
+                <div><span>业务范围</span><strong>{activeCollectionTask.rules.industry}</strong></div>
+              </div>
+              <nav className="task-workspace-tabs" aria-label="任务工作区">
+                {[
+                  ["overview", "任务概览"],
+                  ["results", "筛选结果"],
+                  ["attention", `需要处理${attention.length ? `（${attention.length}）` : ""}`],
+                  ["rules", "规则快照"],
+                ].map(([key, label]) => (
+                  <button
+                    key={key}
+                    className={taskWorkspaceTab === key ? "active" : ""}
+                    onClick={() => setTaskWorkspaceTab(key as TaskWorkspaceTab)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </nav>
+            </section>
+          )}
+          {activeCollectionTask && taskWorkspaceTab === "overview" && (
+            <section className={`surface task-status-panel status-${activeCollectionTask.status}`}>
+              <div className="task-status-icon"><Icon name={activeCollectionTask.status === "解析完成" ? "check" : "data"} size={24} /></div>
               <div>
-                <h2>任务列表</h2>
-                <p>在羚羊创建任务后，在这里登记任务 ID 并配置业务规则。</p>
+                <h2>{taskStatusCopy[activeCollectionTask.status].title}</h2>
+                <p>{taskStatusCopy[activeCollectionTask.status].detail}</p>
               </div>
-              <button className="button primary create-task-button" disabled={!loaded} onClick={openCreateCollectionTask}>
-                <Icon name="plus" size={17} />新建任务
-              </button>
-            </div>
-            {!w.collectionTasks.length ? (
-              <div className="collection-task-empty">
-                <span className="upload-emblem"><Icon name="data" size={28} /></span>
-                <h3>先新建一个采集任务</h3>
-                <p>填写羚羊任务 ID、任务名称和业务规则。数据入库后，这里会提示可解析。</p>
-                <button className="button primary create-task-button large" onClick={openCreateCollectionTask}>新建任务</button>
+              <ol className="task-progress-steps">
+                {["登记任务", "等待数据", "解析数据", "处理结果"].map((step, index) => {
+                  const progress = activeCollectionTask.status === "等待数据" ? 1 : activeCollectionTask.status === "可解析" ? 2 : activeCollectionTask.status === "解析中" ? 3 : 4;
+                  return <li key={step} className={index < progress ? "done" : ""}><span>{index + 1}</span>{step}</li>;
+                })}
+              </ol>
+            </section>
+          )}
+          {activeCollectionTask && taskWorkspaceTab === "rules" && (
+            <section className="surface screening-rules task-rule-snapshot">
+              <div className="section-heading">
+                <div><h2>{activeCollectionTask.status === "解析完成" ? "本次规则快照" : "当前业务规则"}</h2><p>规则只作用于当前任务；开始解析后锁定。</p></div>
+                {["等待数据", "可解析"].includes(activeCollectionTask.status) && <button className="button secondary" onClick={() => openEditCollectionTask(activeCollectionTask)}>编辑规则</button>}
               </div>
-            ) : (
-              <div className="collection-task-table-wrap">
-                <table className="collection-task-table">
-                  <thead><tr><th>任务名称</th><th>羚羊任务 ID</th><th>业务规则</th><th>创建时间</th><th>状态</th><th>操作</th></tr></thead>
-                  <tbody>
-                    {w.collectionTasks.map((task) => (
-                      <tr key={task.id} className={task.batchId === w.batchId ? "active" : ""}>
-                        <td><strong>{task.name}</strong><small>{task.platform}</small></td>
-                        <td><code>{task.sourceTaskCode}</code></td>
-                        <td><strong>{task.rules.industry}</strong><small>{task.rules.audience}</small></td>
-                        <td>{task.createdAt}</td>
-                        <td><StatusPill status={task.status} /></td>
-                        <td className="collection-task-actions">
-                          {["等待数据", "可解析"].includes(task.status) && <button className="button text" onClick={() => openEditCollectionTask(task)}>编辑</button>}
-                          {task.status === "等待数据" && <button className="button text" onClick={() => refreshCollectionTask(task)}>刷新状态</button>}
-                          {task.status === "可解析" && <button className="button primary" disabled={busy} onClick={() => runCollectionTask(task)}>开始解析</button>}
-                          {task.status === "解析中" && <button className="button secondary" disabled>解析中…</button>}
-                          {task.status === "解析完成" && <button className="button text" onClick={() => task.batchId && patch({ batchId: task.batchId, selected: [] })}>查看结果</button>}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </section>
-          {current && <section className="surface screening-rules rules-compact">
-            <Disclosure title={`当前结果 · ${current.name} · 查看任务规则`}>
-              <RuleSummary rules={current.rules || w.rules} />
-            </Disclosure>
-          </section>}
+              <RuleSummary rules={activeCollectionTask.rules} />
+            </section>
+          )}
+          {activeCollectionTask && taskWorkspaceTab === "attention" && (
+            <section className="surface task-attention-overview">
+              <div><h2>需要处理</h2><p>待判断和处理失败记录独立于正常筛选结果，不会清空已选用户和沟通草稿。</p></div>
+              {current ? (
+                <>
+                  <div className="task-attention-counts">
+                    <div><strong>{attention.filter((lead) => !w.failed.includes(lead.id)).length}</strong><span>待判断</span></div>
+                    <div><strong>{attention.filter((lead) => w.failed.includes(lead.id)).length}</strong><span>处理失败</span></div>
+                  </div>
+                  <button className="button primary" disabled={!attention.length} onClick={() => setAttentionOpen(true)}>查看并处理记录</button>
+                </>
+              ) : <p className="table-empty">任务尚未产生解析结果。</p>}
+            </section>
+          )}
+          {activeCollectionTask && taskWorkspaceTab === "results" && !current && (
+            <section className="surface empty-state task-result-empty">
+              <h2>{activeCollectionTask.status === "解析中" ? "任务正在解析" : "暂时没有筛选结果"}</h2>
+              <p>{activeCollectionTask.status === "解析中" ? "完成后会在这里展示筛选结果。" : "数据就绪后开始解析，即可查看结果。"}</p>
+              {activeCollectionTask.status === "可解析" && <button className="button primary" onClick={() => runCollectionTask(activeCollectionTask)}>开始解析</button>}
+            </section>
+          )}
         </>
       )}
-      {view !== "workflow" &&
+      {(view === "leads" || (view === "screening" && Boolean(activeCollectionTask) && taskWorkspaceTab === "results")) &&
         (rows.length ? (
           <section className="surface result-surface">
             <div className="section-heading result-heading">
