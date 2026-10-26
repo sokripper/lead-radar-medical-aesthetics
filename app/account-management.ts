@@ -10,6 +10,72 @@ export type ManagedAccount = {
   assignedTo: string[];
 };
 
+export type QuotaGrade = "A" | "B" | "C" | "D";
+export type QuotaBucket = {
+  total: number;
+  used: number;
+  reserved: number;
+};
+export type TenantQuota = Record<QuotaGrade, QuotaBucket>;
+
+export const demoQuota = (): TenantQuota => ({
+  A: { total: 5000, used: 1280, reserved: 4 },
+  B: { total: 8000, used: 2100, reserved: 4 },
+  C: { total: 12000, used: 3200, reserved: 2 },
+  D: { total: 15000, used: 4800, reserved: 6 },
+});
+
+export function quotaRemaining(quota: TenantQuota, grade: QuotaGrade) {
+  const bucket = quota[grade];
+  return Math.max(0, bucket.total - bucket.used - bucket.reserved);
+}
+
+export function quotaCanReserve(quota: TenantQuota, needs: Record<QuotaGrade, number>) {
+  return (Object.keys(needs) as QuotaGrade[]).every(grade => needs[grade] <= quotaRemaining(quota, grade));
+}
+
+export function reserveQuota(quota: TenantQuota, grade: QuotaGrade, count = 1): TenantQuota {
+  return { ...quota, [grade]: { ...quota[grade], reserved: quota[grade].reserved + count } };
+}
+
+export function settleQuota(quota: TenantQuota, grade: QuotaGrade, count = 1): TenantQuota {
+  return {
+    ...quota,
+    [grade]: {
+      ...quota[grade],
+      used: quota[grade].used + count,
+      reserved: Math.max(0, quota[grade].reserved - count),
+    },
+  };
+}
+
+export function releaseQuota(quota: TenantQuota, grade: QuotaGrade, count = 1): TenantQuota {
+  return { ...quota, [grade]: { ...quota[grade], reserved: Math.max(0, quota[grade].reserved - count) } };
+}
+
+export function restoreQuota(value: unknown): TenantQuota {
+  if (!value || typeof value !== "object") return demoQuota();
+  const saved = value as Partial<TenantQuota>;
+  const modeLegacy = value as {PRECISION?:Partial<QuotaBucket>;BULK?:Partial<QuotaBucket>};
+  const restoreBucket = (bucket: Partial<QuotaBucket>): QuotaBucket => {
+    const total = Math.max(0, Number(bucket.total) || 0);
+    const used = Math.max(0, Math.min(total, Number(bucket.used) || 0));
+    const reserved = Math.max(0, Math.min(total - used, Number(bucket.reserved) || 0));
+    return { total, used, reserved };
+  };
+  const defaults = demoQuota();
+  if (saved.A && saved.B && saved.C && saved.D) return {
+    A: restoreBucket(saved.A), B: restoreBucket(saved.B), C: restoreBucket(saved.C), D: restoreBucket(saved.D),
+  };
+  if (saved.A && saved.B) return {
+    A: restoreBucket(saved.A), B: restoreBucket(saved.B), C: defaults.C, D: defaults.D,
+  };
+  if (modeLegacy.PRECISION && modeLegacy.BULK) return {
+    A: restoreBucket(modeLegacy.PRECISION), B: restoreBucket(modeLegacy.BULK), C: defaults.C, D: defaults.D,
+  };
+  return defaults;
+}
+
 export const currentOperator = "当前操作人";
 export const demoOperators = [currentOperator, "运营同事 A", "运营同事 B"];
 export const demoAccounts = (): ManagedAccount[] => [

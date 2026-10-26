@@ -19,18 +19,31 @@ import {
   projectNames,
   outreachIssue,
   outreachKey,
+  productOpeningCopy,
 } from "./outreach-copy";
 import { RuleSummary, RuleFields } from "./RuleFields";
 import AccountAdmin from "./AccountAdmin";
 import {
   type ManagedAccount,
+  type QuotaGrade,
+  type TenantQuota,
   demoAccounts,
+  demoQuota,
   restoreManagedAccounts,
+  restoreQuota,
   assignedAccounts,
   accountReady,
+  quotaRemaining,
+  quotaCanReserve,
+  reserveQuota,
+  settleQuota,
+  releaseQuota,
 } from "./account-management";
 import {
   type ScreeningRules,
+  type TouchMode,
+  touchModeOptions,
+  touchModeLabel,
   defaultRules,
   restoreRules,
   rulesError,
@@ -63,7 +76,6 @@ import {
   removeSubmitted,
   mergePreparedQueue,
   reachabilityOf,
-  isContactable,
 } from "./operations-state";
 
 type View = "screening" | "leads" | "workflow" | "accounts";
@@ -75,8 +87,9 @@ type Batch = {
   ids: number[];
   time: string;
   rules?: ScreeningRules;
+  touchMode: TouchMode;
 };
-type CollectionTaskStatus = "等待数据" | "可解析" | "解析中" | "解析完成";
+type CollectionTaskStatus = "待配置" | "等待数据" | "可解析" | "解析中" | "解析完成";
 type TaskWorkspaceTab = "overview" | "results" | "attention" | "rules";
 type CollectionTask = {
   id: number;
@@ -86,6 +99,7 @@ type CollectionTask = {
   status: CollectionTaskStatus;
   createdAt: string;
   rules: ScreeningRules;
+  touchMode: TouchMode;
   batchId?: number;
 };
 type Queue = {
@@ -101,6 +115,7 @@ type Task = {
   name: string;
   senderAccountId?: string;
   senderAccountName?: string;
+  quotaGrades: Record<number, QuotaGrade>;
   ids: number[];
   texts: Record<number, string>;
   results: Record<number, SendStatus>;
@@ -136,6 +151,7 @@ type Workspace = {
   industry: string;
   region: string;
   monitor: Monitoring;
+  quota: TenantQuota;
 };
 const emptyQueue = (): Queue => ({
   ids: [],
@@ -153,10 +169,19 @@ const initial = (leads: Prospect[]): Workspace => ({
   supplements: {},
   sender: "",
   dataState: "待处理",
-  schema: 6,
+  schema: 10,
   batches: [],
   batchId: 0,
-  collectionTasks: [],
+  collectionTasks: [{
+    id: 10001,
+    name: "社媒获客_小红书2",
+    sourceTaskCode: "6b27c68f027e412680393da7b322516e",
+    platform: "小红书",
+    status: "待配置",
+    createdAt: "2026/10/26 15:30:00",
+    rules: defaultRules(),
+    touchMode: "PRECISION",
+  }],
   grades: Object.fromEntries(leads.map((l) => [l.id, l.grade])),
   adjustments: {},
   failed: [],
@@ -171,33 +196,42 @@ const initial = (leads: Prospect[]): Workspace => ({
   industry: "新媒体运营",
   region: "全国",
   monitor: emptyMonitoring(),
+  quota: demoQuota(),
 });
 const labels = {
   A: "高意向",
   B: "有需求",
   C: "弱意向",
-  D: "排除",
+  D: "无明确意向",
   待判断: "待判断",
 };
+const quotaGradeKeys:QuotaGrade[] = ["A", "B", "C", "D"];
+const quotaGradeOf = (grade:Prospect["grade"]):QuotaGrade => quotaGradeKeys.includes(grade as QuotaGrade) ? grade as QuotaGrade : "D";
+const quotaNeedsOf = (recipients:Prospect[],grades:Record<number,Prospect["grade"]>):Record<QuotaGrade,number> =>
+  recipients.reduce((needs,lead)=>({ ...needs, [quotaGradeOf(grades[lead.id])]: needs[quotaGradeOf(grades[lead.id])] + 1 }), { A:0, B:0, C:0, D:0 });
 const sharedTasks = [
-  { code: "6b27c68f027e412680393da7b322516e", status: "已入库" },
+  { code: "6b27c68f027e412680393da7b322516e", name: "社媒获客_小红书2", status: "已入库" },
 ] as const;
 const taskStatusCopy: Record<CollectionTaskStatus, { title: string; detail: string }> = {
+  待配置: {
+    title: "已自动同步任务，请选择触达模式",
+    detail: "任务 Key 和名称来自羚羊共享库。选择精准或批量触达，并补充业务信息后即可开始处理。",
+  },
   等待数据: {
     title: "等待共享库数据入库",
     detail: "任务已登记。系统将按羚羊任务 ID 检查数据，入库前可以修改任务信息和业务规则。",
   },
   可解析: {
-    title: "数据已就绪，可以开始解析",
-    detail: "开始前仍可核对任务信息和业务规则；开始解析后，本次规则将锁定为任务快照。",
+    title: "数据已就绪，可以开始处理",
+    detail: "开始前仍可核对触达模式和业务信息；开始后，本次模式与规则将锁定为任务快照。",
   },
   解析中: {
-    title: "正在解析任务数据",
-    detail: "系统正在执行去重、身份整理和意向判断。可以离开本页，稍后从任务列表再次进入查看。",
+    title: "正在处理任务数据",
+    detail: "系统正在执行基础校验、去重和对应模式的名单处理。可以离开本页，稍后再次进入查看。",
   },
   解析完成: {
     title: "解析完成，可以处理结果",
-    detail: "筛选结果、需要处理的记录和本次规则快照均保留在当前任务内。",
+    detail: "触达名单、需要处理的记录和本次模式快照均保留在当前任务内。",
   },
 };
 function Sheet({
@@ -285,6 +319,7 @@ export default function Operations({
   const [collectionTaskDraft, setCollectionTaskDraft] = useState(() => ({
     name: "",
     sourceTaskCode: "",
+    touchMode: "PRECISION" as TouchMode,
     rules: defaultRules(),
   }));
   const [settings, setSettings] = useState(false);
@@ -335,17 +370,21 @@ export default function Operations({
       try {
         const resetRequested = new URLSearchParams(window.location.search).get("reset") === "1";
         if (resetRequested) {
+          localStorage.removeItem("lead-radar-workspace-10");
+          localStorage.removeItem("lead-radar-workspace-9");
+          localStorage.removeItem("lead-radar-workspace-8");
+          localStorage.removeItem("lead-radar-workspace-7");
           localStorage.removeItem("lead-radar-workspace-6");
           localStorage.removeItem("lead-radar-workspace-5");
           localStorage.removeItem("lead-radar-workspace-4");
           localStorage.removeItem("lead-radar-reply-drafts-4");
           window.history.replaceState({}, "", window.location.pathname);
         }
-        const raw = localStorage.getItem("lead-radar-workspace-6") || localStorage.getItem("lead-radar-workspace-5") || localStorage.getItem("lead-radar-workspace-4");
+        const raw = localStorage.getItem("lead-radar-workspace-10") || localStorage.getItem("lead-radar-workspace-9") || localStorage.getItem("lead-radar-workspace-8");
         if (raw) {
           const x = JSON.parse(raw);
           if (
-            ![4, 5, 6].includes(x.schema) ||
+            ![8, 9, 10].includes(x.schema) ||
             !Array.isArray(x.batches) ||
             !Array.isArray(x.tasks) ||
             !x.queue ||
@@ -355,11 +394,16 @@ export default function Operations({
           setW({
             ...initial(leads),
             ...x,
-            schema: 6,
+            schema: 10,
+            batches: x.batches.map((batch: Batch) => ({
+              ...batch,
+              touchMode: batch.touchMode === "BULK" ? "BULK" : "PRECISION",
+            })),
             collectionTasks: Array.isArray(x.collectionTasks)
               ? x.collectionTasks.map((task: CollectionTask) => ({
                   ...task,
                   platform: "小红书",
+                  touchMode: task.touchMode === "BULK" ? "BULK" : "PRECISION",
                   rules: restoreRules(task.rules),
                 }))
               : x.batches.map((batch: Batch) => ({
@@ -370,9 +414,11 @@ export default function Operations({
                   status: "解析完成",
                   createdAt: batch.time,
                   rules: restoreRules(batch.rules || x.rules),
+                  touchMode: batch.touchMode === "BULK" ? "BULK" : "PRECISION",
                   batchId: batch.id,
                 })),
             managedAccounts: restoreManagedAccounts(x.managedAccounts),
+            quota: restoreQuota(x.quota),
             rules: restoreRules(x.rules || {
               industry: x.industry || "新媒体运营",
               region: x.region || "全国",
@@ -392,6 +438,7 @@ export default function Operations({
             },
             tasks: x.tasks.map((t: Task) => ({
               ...t,
+              quotaGrades: t.quotaGrades || Object.fromEntries(t.ids.map(id => [id, quotaGradeOf(x.grades[id])])),
               senderAccountId: t.senderAccountId || (x.schema === 4 ? "xhs-main" : undefined),
               senderAccountName: t.senderAccountName || (x.schema === 4 ? "小红书品牌号" : undefined),
               todos: t.todos || {},
@@ -412,7 +459,7 @@ export default function Operations({
   useEffect(() => {
     if (!loaded) return;
     try {
-      localStorage.setItem("lead-radar-workspace-6", JSON.stringify(w));
+      localStorage.setItem("lead-radar-workspace-10", JSON.stringify(w));
     } catch {
       queueMicrotask(() => setSaveError("本地保存失败，刷新可能丢失编辑。"));
     }
@@ -433,6 +480,8 @@ export default function Operations({
   const current = view === "screening"
     ? w.batches.find((batch) => batch.id === activeCollectionTask?.batchId)
     : w.batches.find((batch) => batch.id === w.batchId);
+  const activeTouchMode: TouchMode = activeCollectionTask?.touchMode || current?.touchMode || "PRECISION";
+  const activeRules = activeCollectionTask?.rules || current?.rules || w.rules;
   const rows = leads.filter((l) =>
     (view === "leads" ? pool : current?.ids || []).includes(l.id),
   );
@@ -442,9 +491,14 @@ export default function Operations({
     );
   const occupied = w.tasks.flatMap((t) => t.ids);
   const reachability = (lead: Prospect) => reachabilityOf(lead,w.grades[lead.id]);
+  const contactableForMode = (lead: Prospect) => {
+    const grade = w.grades[lead.id];
+    if (grade === "待判断") return false;
+    return activeTouchMode === "BULK" ? ["A", "B", "C", "D"].includes(grade) : ["A", "B", "C"].includes(grade);
+  };
   const available = (id: number) => {
     const lead=leads.find(item=>item.id===id);
-    return Boolean(lead&&isContactable(lead,w.grades[id])&&!w.failed.includes(id)&&!occupied.includes(id));
+    return Boolean(lead&&contactableForMode(lead)&&!w.failed.includes(id)&&!occupied.includes(id));
   };
   const { completed, attention } = partitionResults(rows, w.grades, w.failed);
   const attentionRows = attention.filter(
@@ -460,7 +514,7 @@ export default function Operations({
         ? filter === "ALL" || w.failed.includes(l.id)
         : !w.failed.includes(l.id) &&
           (filter === "CONTACTABLE"
-            ? isContactable(l,w.grades[l.id])
+            ? contactableForMode(l)
             : w.grades[l.id] === filter)) &&
       `${l.name}${l.context}${l.intent}${l.location}`.includes(search.trim()) &&
       (!batchFilter ||
@@ -474,24 +528,39 @@ export default function Operations({
     (id) => rows.some((l) => l.id === id) && available(id),
   );
   const identityOK = canGenerate("formal", w.identity, w.attested);
+  const productCopy = (l: Prospect) => activeTouchMode === "BULK" && w.grades[l.id] === "D";
+  const copyKeyFor = (l: Prospect) => productCopy(l)
+    ? JSON.stringify(["PRODUCT", activeRules.revision, activeRules.offering, activeRules.businessNeeds])
+    : JSON.stringify(["CONTEXT", outreachKey(w.outreach)]);
   function copyIssue(l: Prospect) {
-    return outreachIssue(l, w.outreach) ||
-      (w.queue.drafts[l.id] !== undefined && w.queue.copyKeys?.[l.id] !== outreachKey(w.outreach)
+    const issue = productCopy(l) ? rulesError(activeRules) : outreachIssue(l, w.outreach);
+    return issue ||
+      (w.queue.drafts[l.id] !== undefined && w.queue.copyKeys?.[l.id] !== copyKeyFor(l)
         ? "话术已更新，请重新生成；原编辑已保留" : "");
   }
   const copyPending = leads.filter(l => w.queue.ids.includes(l.id) && !w.queue.blocked.includes(l.id) && copyIssue(l));
   const personalAccounts = assignedAccounts(w.managedAccounts);
   const selectedAccount = personalAccounts.find(account => account.id === w.sender);
+  const remainingQuota:Record<QuotaGrade,number> = {
+    A:quotaRemaining(w.quota,"A"), B:quotaRemaining(w.quota,"B"), C:quotaRemaining(w.quota,"C"), D:quotaRemaining(w.quota,"D"),
+  };
+  const remainingQuotaSummary = quotaGradeKeys.map(grade=>`${grade} ${remainingQuota[grade].toLocaleString()}`).join(" · ");
   const senderReady = accountReady(w.managedAccounts, w.sender);
   const taskAccount = (t: Task) => w.managedAccounts.find(account => account.id === t.senderAccountId);
   const taskReady = (t: Task) => accountReady(w.managedAccounts, t.senderAccountId || "");
   const ready = identityOK && senderReady
     ? readyRecipients(leads, w.queue, w.grades, occupied, { 小红书: true }, copyPending.map(l => l.id), leads.filter(l=>available(l.id)).map(l=>l.id)).filter(l => available(l.id))
     : [];
+  const readyQuotaNeeds = quotaNeedsOf(ready, w.grades);
+  const readyQuotaAvailable = quotaCanReserve(w.quota, readyQuotaNeeds);
+  const readyQuotaSummary = quotaGradeKeys.filter(grade=>readyQuotaNeeds[grade]>0).map(grade=>`${grade} ${readyQuotaNeeds[grade]} 次`).join(" · ");
+  const quotaShortageSummary = quotaGradeKeys.filter(grade=>readyQuotaNeeds[grade]>remainingQuota[grade]).map(grade=>`${grade} 需 ${readyQuotaNeeds[grade]} / 余 ${remainingQuota[grade]}`).join(" · ");
   const detailLead = leads.find((l) => l.id === detail);
   const task = w.tasks.find((t) => t.id === convo?.task);
   const person = leads.find((l) => l.id === convo?.lead);
   const replyTask = w.tasks.find((t) => t.id === reply?.task);
+  const replyQuotaGrade = reply ? replyTask?.quotaGrades?.[reply.lead] || quotaGradeOf(w.grades[reply.lead]) : null;
+  const replyQuotaAvailable = Boolean(replyQuotaGrade && quotaRemaining(w.quota, replyQuotaGrade) > 0);
   const unread = w.tasks.reduce(
     (n, t) =>
       n +
@@ -504,17 +573,12 @@ export default function Operations({
     0,
   );
   function message(l: Prospect) {
-    return openingCopy(l, w.outreach);
-  }
-  function openCreateCollectionTask() {
-    setEditingCollectionTaskId(null);
-    setCollectionTaskDraft({ name: "", sourceTaskCode: "", rules: defaultRules() });
-    setCreateTaskOpen(true);
+    return productCopy(l) ? productOpeningCopy(activeRules, l.id) : openingCopy(l, w.outreach);
   }
   function openCollectionTask(task: CollectionTask) {
     setActiveCollectionTaskId(task.id);
     setTaskWorkspaceTab(task.status === "解析完成" ? "results" : "overview");
-    setFilter("CONTACTABLE");
+    setFilter(task.touchMode === "BULK" ? "ALL" : "CONTACTABLE");
     setSearch("");
     setAttentionFilter("ALL");
     if (task.batchId) patch({ batchId: task.batchId, selected: [] });
@@ -525,11 +589,12 @@ export default function Operations({
     patch({ selected: [] });
   }
   function openEditCollectionTask(task: CollectionTask) {
-    if (!["等待数据", "可解析"].includes(task.status)) return;
+    if (!["待配置", "等待数据", "可解析"].includes(task.status)) return;
     setEditingCollectionTaskId(task.id);
     setCollectionTaskDraft({
       name: task.name,
       sourceTaskCode: task.sourceTaskCode,
+      touchMode: task.touchMode,
       rules: JSON.parse(JSON.stringify(task.rules)),
     });
     setCreateTaskOpen(true);
@@ -551,6 +616,7 @@ export default function Operations({
           name,
           sourceTaskCode: code,
           status: available ? "可解析" : "等待数据",
+          touchMode: collectionTaskDraft.touchMode,
           rules: JSON.parse(JSON.stringify(collectionTaskDraft.rules)),
         } : task),
       }));
@@ -568,6 +634,7 @@ export default function Operations({
         sourceTaskCode: code,
         platform: "小红书",
         status: available ? "可解析" : "等待数据",
+        touchMode: collectionTaskDraft.touchMode,
         createdAt: new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" }),
         rules: JSON.parse(JSON.stringify(collectionTaskDraft.rules)),
       }, ...old.collectionTasks],
@@ -600,7 +667,7 @@ export default function Operations({
         selected: [],
         collectionTasks: old.collectionTasks.map((item) => item.id === task.id ? { ...item, status: "解析完成", batchId: existing.id } : item),
       }));
-      setFilter("CONTACTABLE");
+      setFilter(task.touchMode === "BULK" ? "ALL" : "CONTACTABLE");
       setTaskWorkspaceTab("results");
       setNotice("该任务已完成解析，已切换到现有结果。");
       return;
@@ -625,6 +692,7 @@ export default function Operations({
               timeZone: "Asia/Shanghai",
             }),
             rules: JSON.parse(JSON.stringify(task.rules)),
+            touchMode: task.touchMode,
           },
           ...old.batches,
         ],
@@ -635,7 +703,7 @@ export default function Operations({
         collectionTasks: old.collectionTasks.map((item) => item.id === task.id ? { ...item, status: "解析完成", batchId: id } : item),
       }));
       setBusy(false);
-      setFilter("CONTACTABLE");
+      setFilter(task.touchMode === "BULK" ? "ALL" : "CONTACTABLE");
       setTaskWorkspaceTab("results");
       setSearch("");
       setBatchFilter("");
@@ -652,14 +720,23 @@ export default function Operations({
       return;
     }
     const p = prepareDemoRecipients(selected, pool, occupied);
+    const allocatedAccount = selectedAccount?.status === "正常"
+      ? selectedAccount.id
+      : personalAccounts.find((account) => account.status === "正常")?.id || "";
     submitting.current = false;
     patch({
-      queue: mergePreparedQueue(w.queue, p, Object.fromEntries(leads.filter(l => p.matched.includes(l.id)).map(l => [l.id, message(l)])), outreachKey(w.outreach)),
+      sender: allocatedAccount,
+      queue: mergePreparedQueue(
+        w.queue,
+        p,
+        Object.fromEntries(leads.filter(l => p.matched.includes(l.id)).map(l => [l.id, message(l)])),
+        Object.fromEntries(leads.filter(l => p.matched.includes(l.id)).map(l => [l.id, copyKeyFor(l)])),
+      ),
     });
     setReview(true);
   }
   function send() {
-    if (submitting.current || !ready.length || monitorError(w.monitor)) return;
+    if (submitting.current || !ready.length || !readyQuotaAvailable || monitorError(w.monitor)) return;
     submitting.current = true;
     const ids = ready.map((l) => l.id);
     // eslint-disable-next-line react-hooks/purity -- Timestamp is created only in the explicit send event handler.
@@ -673,6 +750,7 @@ export default function Operations({
           name: `触达任务 ${old.tasks.length + 1}`,
           senderAccountId: old.sender,
           senderAccountName: old.managedAccounts.find(account => account.id === old.sender)?.name || "未指定账号",
+          quotaGrades: Object.fromEntries(ready.map(lead => [lead.id, quotaGradeOf(old.grades[lead.id])])),
           ids,
           texts: Object.fromEntries(
             ready.map((l) => [l.id, old.queue.drafts[l.id]]),
@@ -693,6 +771,10 @@ export default function Operations({
         },
       ],
       queue: removeSubmitted(old.queue, ids),
+      quota: quotaGradeKeys.reduce(
+        (quota, grade) => reserveQuota(quota, grade, readyQuotaNeeds[grade]),
+        old.quota,
+      ),
       monitor: emptyMonitoring(),
       selected: [],
     }));
@@ -709,11 +791,12 @@ export default function Operations({
     follow = false,
   ) {
     setNotice("");
-    setW((old) => ({
-      ...old,
-      tasks: old.tasks.map((t) => {
+    setW((old) => {
+      let quota = old.quota;
+      const tasks = old.tasks.map((t) => {
         if (t.id !== tid) return t;
         const key = follow ? "followResults" : "results";
+        const quotaGrade = t.quotaGrades?.[id] || quotaGradeOf(old.grades[id]);
         if (follow && ["已关闭", "已转人工"].includes(t.todos[id])) return t;
         const from = t[key][id] || "待执行";
         if (
@@ -730,7 +813,16 @@ export default function Operations({
           event !== "cancel"
         )
           return t;
+        if (from === "发送失败" && event === "retry") {
+          if (quotaRemaining(quota, quotaGrade) <= 0) return t;
+          quota = reserveQuota(quota, quotaGrade);
+        }
         const next = transitionSend(from, event);
+        if (next !== from && next === "发送成功") {
+          quota = settleQuota(quota, quotaGrade);
+        } else if (next !== from && ["发送失败", "已取消"].includes(next)) {
+          quota = releaseQuota(quota, quotaGrade);
+        }
         return {
           ...t,
           [key]: { ...t[key], [id]: next },
@@ -742,8 +834,9 @@ export default function Operations({
                   `${new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })} · ${follow ? "跟进" : "首轮"} ${id} · ${from} → ${next}（模拟）`,
                 ],
         };
-      }),
-    }));
+      });
+      return { ...old, tasks, quota };
+    });
   }
   function controls(t: Task, id: number, follow = false) {
     const status = (follow ? t.followResults : t.results)[id];
@@ -986,11 +1079,13 @@ export default function Operations({
   function exportList() {
     const data = exportRows(exportScope, rows, w.selected, visible);
     const csv = [
-      ["用户", "平台", "意向等级", "业务场景", "触达建议", "地区", "评论", "依据", "联系状态"],
+      ["用户", "平台", "触达模式", "意向等级", "话术类型", "业务场景", "触达建议", "地区", "评论", "依据", "联系状态"],
       ...data.map((l) => [
         l.name,
         platform(l),
+        touchModeLabel(activeTouchMode),
         w.failed.includes(l.id) ? "处理失败" : w.grades[l.id],
+        productCopy(l) ? "产品话术" : "上下文话术",
         l.businessScene || "待判断",
         reachability(l),
         l.location,
@@ -1015,7 +1110,7 @@ export default function Operations({
     if (!identityOK) return;
     const lead = leads.find(l => l.id === id);
     if (!lead) return;
-    const error = outreachIssue(lead, w.outreach);
+    const error = productCopy(lead) ? rulesError(activeRules) : outreachIssue(lead, w.outreach);
     if (error) { setNotice(error); setRegenerate(null); openSettings(true); return; }
     patch({
       queue: {
@@ -1024,7 +1119,7 @@ export default function Operations({
           ...w.queue.drafts,
           [id]: message(lead),
         },
-        copyKeys: { ...w.queue.copyKeys, [id]: outreachKey(w.outreach) },
+        copyKeys: { ...w.queue.copyKeys, [id]: copyKeyFor(lead) },
         edited: w.queue.edited.filter((i) => i !== id),
       },
     });
@@ -1032,15 +1127,15 @@ export default function Operations({
   }
   function regenerateBatch() {
     if (!identityOK) return;
-    const candidates = leads.filter(l => w.queue.included.includes(l.id) && !w.queue.blocked.includes(l.id) && available(l.id) && !outreachIssue(l, w.outreach));
-    if (!candidates.length) { setRegenerate(null); setNotice("请先补充本批项目和话术素材"); openSettings(true); return; }
+    const candidates = leads.filter(l => w.queue.included.includes(l.id) && !w.queue.blocked.includes(l.id) && available(l.id) && !copyIssue(l));
+    if (!candidates.length) { setRegenerate(null); setNotice("请先补充业务信息或上下文话术素材"); openSettings(true); return; }
     patch({ queue: { ...w.queue,
       drafts: { ...w.queue.drafts, ...Object.fromEntries(candidates.map(l => [l.id, message(l)])) },
-      copyKeys: { ...w.queue.copyKeys, ...Object.fromEntries(candidates.map(l => [l.id, outreachKey(w.outreach)])) },
+      copyKeys: { ...w.queue.copyKeys, ...Object.fromEntries(candidates.map(l => [l.id, copyKeyFor(l)])) },
       edited: w.queue.edited.filter(id => !candidates.some(l => l.id === id)),
     } });
     setRegenerate(null);
-    setNotice(`已按“${approachLabels[w.outreach.approach]}”重新生成 ${candidates.length} 条；其他草稿保留。`);
+    setNotice(`已按当前触达模式重新生成 ${candidates.length} 条；其他草稿保留。`);
   }
   function openRules() {
     setRuleDraft({ ...w.rules, grades: { ...w.rules.grades }, contactableScenes:[...w.rules.contactableScenes] });
@@ -1117,7 +1212,7 @@ export default function Operations({
     }
   }
   if (view === "accounts") {
-    return <AccountAdmin accounts={w.managedAccounts} onChange={managedAccounts => {
+    return <AccountAdmin accounts={w.managedAccounts} quota={w.quota} onQuotaChange={quota => patch({ quota })} onChange={managedAccounts => {
       setW(old => ({ ...old, managedAccounts,
         sender: accountReady(managedAccounts, old.sender) ? old.sender : "",
       }));
@@ -1154,13 +1249,13 @@ export default function Operations({
         演示工作区 · 个人侧仅使用已分配账号，数据处理与发送均为模拟，记录仅保存在当前浏览器。
       </p>
       {view === "workflow" && (
-        <section className="surface personal-account-picker" aria-label="新任务使用账号">
+        <section className="surface personal-account-picker" aria-label="账号待处理队列">
           <div>
-            <strong>新任务使用账号</strong>
-            <p>从分配给你的账号中选择；已创建的任务仍使用原账号。</p>
+            <strong>当前账号队列</strong>
+            <p>切换查看本人各账号的待处理用户；具体分流策略由系统统一执行。</p>
           </div>
           <label className="field">
-            小红书账号
+            查看账号
             <select
               aria-label="个人侧选择发送账号"
               value={selectedAccount ? w.sender : ""}
@@ -1175,6 +1270,8 @@ export default function Operations({
             </select>
           </label>
           {!personalAccounts.length && <p className="account-picker-message" role="alert">暂无分配给你的账号，请联系管理员分配。</p>}
+          {quotaGradeKeys.every(grade=>remainingQuota[grade]<=0) && <p className="account-picker-message" role="alert">A/B/C/D 额度均不足，新的发送已暂停，请联系管理员补充额度。</p>}
+          {quotaGradeKeys.some(grade=>remainingQuota[grade]>0) && <p className="account-picker-message quota-ok">剩余可用额度：{remainingQuotaSummary}</p>}
         </section>
       )}
       {saveError && (
@@ -1201,23 +1298,20 @@ export default function Operations({
               <div className="collection-task-heading">
                 <div>
                   <h2>任务列表</h2>
-                  <p>每个任务都有独立的数据、业务规则和处理记录。点击任务进入工作区。</p>
+                  <p>系统按羚羊共享库中的任务 Key 自动建档；每个任务独立维护业务规则和处理记录。</p>
                 </div>
-                <button className="button primary create-task-button" disabled={!loaded} onClick={openCreateCollectionTask}>
-                  <Icon name="plus" size={17} />新建任务
-                </button>
+                <span className="auto-sync-indicator"><i />自动同步已开启</span>
               </div>
               {!w.collectionTasks.length ? (
                 <div className="collection-task-empty">
                   <span className="upload-emblem"><Icon name="data" size={28} /></span>
-                  <h3>先新建一个采集任务</h3>
-                  <p>填写羚羊任务 ID、任务名称和业务规则。数据入库后，这里会提示可解析。</p>
-                  <button className="button primary create-task-button large" onClick={openCreateCollectionTask}>新建任务</button>
+                  <h3>暂未同步到羚羊任务</h3>
+                  <p>系统会按共享库中的任务 Key 自动建档，无需手动填写任务 ID。同步后请补充该任务的业务规则。</p>
                 </div>
               ) : (
                 <div className="collection-task-table-wrap">
                   <table className="collection-task-table">
-                    <thead><tr><th>任务名称</th><th>羚羊任务 ID</th><th>业务规则</th><th>创建时间</th><th>状态</th><th>操作</th></tr></thead>
+                    <thead><tr><th>任务名称</th><th>羚羊任务 ID</th><th>触达模式</th><th>业务规则</th><th>创建时间</th><th>状态</th><th>操作</th></tr></thead>
                     <tbody>
                       {w.collectionTasks.map((task) => (
                         <tr key={task.id}>
@@ -1226,7 +1320,8 @@ export default function Operations({
                             <small>{task.platform}</small>
                           </td>
                           <td><code>{task.sourceTaskCode}</code></td>
-                          <td><strong>{task.rules.industry}</strong><small>{task.rules.audience}</small></td>
+                          <td><span className={`mode-pill mode-${task.touchMode.toLowerCase()}`}>{touchModeLabel(task.touchMode)}</span></td>
+                          <td>{task.status === "待配置" ? <strong>待配置</strong> : <><strong>{task.rules.industry}</strong><small>{task.rules.audience}</small></>}</td>
                           <td>{task.createdAt}</td>
                           <td><StatusPill status={task.status} /></td>
                           <td className="collection-task-actions">
@@ -1244,27 +1339,27 @@ export default function Operations({
               <div className="task-workspace-bar">
                 <button className="button text back-to-tasks" onClick={closeCollectionTask}>← 返回任务列表</button>
                 <div className="task-workspace-actions">
-                  {["等待数据", "可解析"].includes(activeCollectionTask.status) && (
-                    <button className="button secondary" onClick={() => openEditCollectionTask(activeCollectionTask)}>编辑任务</button>
+                  {["待配置", "等待数据", "可解析"].includes(activeCollectionTask.status) && (
+                    <button className="button secondary" onClick={() => openEditCollectionTask(activeCollectionTask)}>{activeCollectionTask.status === "待配置" ? "配置业务规则" : "编辑规则"}</button>
                   )}
                   {activeCollectionTask.status === "等待数据" && (
                     <button className="button secondary" onClick={() => refreshCollectionTask(activeCollectionTask)}>刷新状态</button>
                   )}
                   {activeCollectionTask.status === "可解析" && (
-                    <button className="button primary" disabled={busy} onClick={() => runCollectionTask(activeCollectionTask)}>开始解析</button>
+                    <button className="button primary" disabled={busy} onClick={() => runCollectionTask(activeCollectionTask)}>开始处理</button>
                   )}
                 </div>
               </div>
               <div className="task-workspace-summary">
                 <div><span>状态</span><StatusPill status={activeCollectionTask.status} /></div>
                 <div><span>平台</span><strong>{activeCollectionTask.platform}</strong></div>
-                <div><span>创建时间</span><strong>{activeCollectionTask.createdAt}</strong></div>
-                <div><span>业务范围</span><strong>{activeCollectionTask.rules.industry}</strong></div>
+                <div><span>触达模式</span><strong>{touchModeLabel(activeCollectionTask.touchMode)}</strong></div>
+                <div><span>业务范围</span><strong>{activeCollectionTask.status === "待配置" ? "待配置" : activeCollectionTask.rules.industry}</strong></div>
               </div>
               <nav className="task-workspace-tabs" aria-label="任务工作区">
                 {[
                   ["overview", "任务概览"],
-                  ["results", "筛选结果"],
+                  ["results", activeCollectionTask.touchMode === "BULK" ? "批量名单" : "筛选结果"],
                   ["attention", `需要处理${attention.length ? `（${attention.length}）` : ""}`],
                   ["rules", "规则快照"],
                 ].map(([key, label]) => (
@@ -1287,8 +1382,8 @@ export default function Operations({
                 <p>{taskStatusCopy[activeCollectionTask.status].detail}</p>
               </div>
               <ol className="task-progress-steps">
-                {["登记任务", "等待数据", "解析数据", "处理结果"].map((step, index) => {
-                  const progress = activeCollectionTask.status === "等待数据" ? 1 : activeCollectionTask.status === "可解析" ? 2 : activeCollectionTask.status === "解析中" ? 3 : 4;
+                {["同步任务", "选择模式与规则", "处理数据", "处理结果"].map((step, index) => {
+                  const progress = activeCollectionTask.status === "待配置" ? 1 : ["等待数据", "可解析"].includes(activeCollectionTask.status) ? 2 : activeCollectionTask.status === "解析中" ? 3 : 4;
                   return <li key={step} className={index < progress ? "done" : ""}><span>{index + 1}</span>{step}</li>;
                 })}
               </ol>
@@ -1298,8 +1393,9 @@ export default function Operations({
             <section className="surface screening-rules task-rule-snapshot">
               <div className="section-heading">
                 <div><h2>{activeCollectionTask.status === "解析完成" ? "本次规则快照" : "当前业务规则"}</h2><p>规则只作用于当前任务；开始解析后锁定。</p></div>
-                {["等待数据", "可解析"].includes(activeCollectionTask.status) && <button className="button secondary" onClick={() => openEditCollectionTask(activeCollectionTask)}>编辑规则</button>}
+                {["待配置", "等待数据", "可解析"].includes(activeCollectionTask.status) && <button className="button secondary" onClick={() => openEditCollectionTask(activeCollectionTask)}>{activeCollectionTask.status === "待配置" ? "配置业务规则" : "编辑规则"}</button>}
               </div>
+              <div className="mode-snapshot"><strong>{touchModeLabel(activeCollectionTask.touchMode)}</strong><span>{touchModeOptions.find(item=>item.key===activeCollectionTask.touchMode)?.note}</span></div>
               <RuleSummary rules={activeCollectionTask.rules} />
             </section>
           )}
@@ -1319,9 +1415,9 @@ export default function Operations({
           )}
           {activeCollectionTask && taskWorkspaceTab === "results" && !current && (
             <section className="surface empty-state task-result-empty">
-              <h2>{activeCollectionTask.status === "解析中" ? "任务正在解析" : "暂时没有筛选结果"}</h2>
-              <p>{activeCollectionTask.status === "解析中" ? "完成后会在这里展示筛选结果。" : "数据就绪后开始解析，即可查看结果。"}</p>
-              {activeCollectionTask.status === "可解析" && <button className="button primary" onClick={() => runCollectionTask(activeCollectionTask)}>开始解析</button>}
+              <h2>{activeCollectionTask.status === "解析中" ? "任务正在处理" : "暂时没有触达名单"}</h2>
+              <p>{activeCollectionTask.status === "解析中" ? "完成后会在这里展示本次触达名单。" : "数据就绪后开始处理，即可查看结果。"}</p>
+              {activeCollectionTask.status === "可解析" && <button className="button primary" onClick={() => runCollectionTask(activeCollectionTask)}>开始处理</button>}
             </section>
           )}
         </>
@@ -1332,7 +1428,7 @@ export default function Operations({
             <div className="section-heading result-heading">
               <div>
                 <h2>
-                  {view === "leads" ? "历史名单" : "筛选结果"}{" "}
+                  {view === "leads" ? "历史名单" : activeTouchMode === "BULK" ? "批量触达名单" : "精准触达结果"}{" "}
                   <span className="count">{visible.length}</span>
                   {visible.length !== completed.length && <small className="result-total"> / 共 {completed.length}</small>}
                 </h2>
@@ -1366,12 +1462,11 @@ export default function Operations({
             <div className="result-toolbar">
               <div className="filter-tabs">
                 {[
-                  ["CONTACTABLE", "可触达"],
-                  ["ALL", "全部"],
+                  ...(activeTouchMode === "BULK" ? [["ALL", "全部可触达"]] : [["CONTACTABLE", "可触达 A/B/C"], ["ALL", "全部"]]),
                   ["A", "A 高意向"],
                   ["B", "B 有需求"],
                   ["C", "C 弱意向"],
-                  ["D", "D 排除"],
+                  ["D", activeTouchMode === "BULK" ? "D 产品话术" : "D 不触达"],
                 ].map(([key, label]) => (
                   <button
                     key={key}
@@ -1574,8 +1669,9 @@ export default function Operations({
                         <div className="scene-cell">
                           <strong>{l.businessScene || "待判断"}</strong>
                           <span className={`touch-tag touch-${reachability(l)==='优先触达'?'priority':reachability(l)==='建议触达'?'recommended':reachability(l)==='探索触达'?'explore':'hold'}`}>
-                            {reachability(l)}
+                            {activeTouchMode === "BULK" ? "批量触达" : contactableForMode(l) ? reachability(l) : "不触达"}
                           </span>
+                          <span className={`copy-type-tag ${productCopy(l) ? "product" : "context"}`}>{productCopy(l) ? "产品话术" : "上下文话术"}</span>
                         </div>
                       </td>
                       <td>
@@ -2145,11 +2241,11 @@ export default function Operations({
           <>
             <div>
               <strong>{ready.length} 条可提交</strong>
-              <small>演示提交，不发送真实消息</small>
+              <small>{readyQuotaAvailable ? `提交后按等级预占：${readyQuotaSummary || "无"}` : `额度不足：${quotaShortageSummary}`}</small>
             </div>
             <button
               className="button primary"
-              disabled={!ready.length || Boolean(monitorError(w.monitor))}
+              disabled={!ready.length || !readyQuotaAvailable || Boolean(monitorError(w.monitor))}
               onClick={send}
             >
               确认发送 {ready.length} 条
@@ -2158,29 +2254,22 @@ export default function Operations({
         }
       >
         <section className="settings-section">
-          <h3>本批话术：{approachLabels[w.outreach.approach]}</h3>
-          <p>{w.outreach.greeting}～{w.outreach.experience}</p>
-          <p className="field-hint">下方正文按各自项目生成。设置变化不会覆盖旧草稿，可确认后统一重新生成。</p>
+          <h3>本批模式：{touchModeLabel(activeTouchMode)}</h3>
+          <p>{activeTouchMode === "BULK" ? "A/B/C 使用上下文话术；D 使用基于客户产品信息生成的产品话术。" : "仅发送 A/B/C，并结合帖子或评论上下文生成沟通话术。"}</p>
+          <p className="field-hint">上下文话术模板：{w.outreach.greeting}～{w.outreach.experience}。设置变化不会覆盖旧草稿，可确认后统一重新生成。</p>
           <button className="button secondary" onClick={() => openSettings(true)}>设置批量话术</button>
           <button className="button text" disabled={!identityOK || !w.queue.included.length} onClick={() => setRegenerate(-1)}>按当前话术重新生成本批</button>
           {copyPending.length > 0 && <p className="notice">{copyPending.length} 位待补充素材或更新正文，其余用户可继续确认。</p>}
         </section>
         <section className="settings-section">
-          <h3>发送账号</h3>
-          <label className="field">
-            小红书账号
-            <select
-              aria-label="发送账号"
-              value={selectedAccount ? w.sender : ""}
-              onChange={(e) => patch({ sender: e.target.value })}
-            >
-              <option value="">
-                请选择已分配账号
-              </option>
-              {personalAccounts.map(account => <option key={account.id} value={account.id} disabled={account.status !== "正常"}>{account.name} · {account.status}</option>)}
-            </select>
-          </label>
-          {!senderReady && <p role="alert">{personalAccounts.length ? "请选择一个状态正常的已分配账号。" : "暂无分配给你的账号，请联系管理员。"}</p>}
+          <h3>系统分配的执行账号</h3>
+          <div className="allocated-account">
+            <strong>{selectedAccount?.name || "暂无可用账号"}</strong>
+            <span>{selectedAccount ? `小红书 · ${selectedAccount.status}` : "请联系管理员检查账号分配"}</span>
+          </div>
+          <p className="field-hint">本批用户已进入当前账号的待发送队列，发送前不能临时改派。</p>
+          {!senderReady && <p role="alert">{personalAccounts.length ? "系统未找到状态正常的已分配账号。" : "暂无分配给你的账号，请联系管理员。"}</p>}
+          {senderReady && !readyQuotaAvailable && <p role="alert">部分意向等级额度不足（{quotaShortageSummary}），请减少对应等级的数量或联系管理员补充额度。</p>}
           <h3>后续回复检查</h3>
           <label className="checkbox-label">
             <input
@@ -2303,14 +2392,14 @@ export default function Operations({
                       queue: {
                         ...w.queue,
                         drafts: { ...w.queue.drafts, [l.id]: e.target.value },
-                        copyKeys: { ...w.queue.copyKeys, [l.id]: outreachIssue(l, w.outreach) ? (w.queue.copyKeys?.[l.id] || "") : outreachKey(w.outreach) },
+                        copyKeys: { ...w.queue.copyKeys, [l.id]: copyIssue(l) ? (w.queue.copyKeys?.[l.id] || "") : copyKeyFor(l) },
                         edited: [...new Set([...w.queue.edited, l.id])],
                       },
                     })
                   }
                 />
               </label>
-              <p className="field-hint">{approachLabels[w.outreach.approach]} · 核对对应项目、经历和正文后确认发送。</p>
+              <p className="field-hint">{productCopy(l) ? "产品话术 · 不引用对方上下文" : `${approachLabels[w.outreach.approach]} · 上下文话术`} · 核对正文后确认发送。</p>
               <div className="review-tools">
                 <span>{selectedAccount ? `小红书 · ${selectedAccount.name}` : "请在上方选择已分配账号"}</span>
                 <button
@@ -2331,7 +2420,7 @@ export default function Operations({
       <Sheet
         open={createTaskOpen}
         wide
-        title={editingCollectionTaskId === null ? "新建采集任务" : "编辑采集任务"}
+        title="配置采集任务"
         onClose={() => { setCreateTaskOpen(false); setEditingCollectionTaskId(null); }}
         footer={
           <>
@@ -2341,36 +2430,44 @@ export default function Operations({
               disabled={!collectionTaskDraft.name.trim() || !collectionTaskDraft.sourceTaskCode.trim() || Boolean(rulesError(collectionTaskDraft.rules))}
               onClick={createCollectionTask}
             >
-              {editingCollectionTaskId === null ? "创建任务" : "保存修改"}
+              保存模式与规则
             </button>
           </>
         }
       >
-        <p>{editingCollectionTaskId === null ? "先在羚羊完成采集任务创建，再将任务 ID 和本次业务信息登记到这里。" : "数据解析前可修改任务信息和业务规则；开始解析后将锁定本次配置。"}</p>
+        <p>任务 Key 与名称由系统从羚羊共享库自动同步。先选择本次触达模式，再补充业务信息；开始处理后将锁定本次配置。</p>
         <div className="collection-task-form">
           <div className="collection-task-basics">
             <label className="field">
               任务中文名称
               <input
                 aria-label="任务中文名称"
-                placeholder="例如：美业客户线索采集"
+                readOnly
                 value={collectionTaskDraft.name}
-                onChange={(event) => setCollectionTaskDraft((old) => ({ ...old, name: event.target.value }))}
               />
             </label>
             <label className="field">
               羚羊任务 ID
               <input
                 aria-label="羚羊任务 ID"
-                placeholder="粘贴羚羊平台生成的任务 ID"
+                readOnly
                 value={collectionTaskDraft.sourceTaskCode}
-                onChange={(event) => setCollectionTaskDraft((old) => ({ ...old, sourceTaskCode: event.target.value }))}
               />
             </label>
           </div>
+          <fieldset className="touch-mode-selector">
+            <legend>选择触达模式</legend>
+            <p>触达模式只影响名单范围和话术策略；额度始终按 A/B/C/D 分别扣减。开始处理后不可切换模式。</p>
+            <div className="touch-mode-options">
+              {touchModeOptions.map(option=><label key={option.key} className={`touch-mode-card ${collectionTaskDraft.touchMode===option.key?"selected":""}`}>
+                <input type="radio" name="touch-mode" value={option.key} checked={collectionTaskDraft.touchMode===option.key} onChange={()=>setCollectionTaskDraft(old=>({...old,touchMode:option.key}))}/>
+                <span><strong>{option.label}</strong><small>{option.description}</small><em>{option.note}</em></span>
+              </label>)}
+            </div>
+          </fieldset>
           <div className="form-section-title">
-            <h3>本次业务规则</h3>
-            <p>规则与该任务绑定，数据就绪后可直接解析。</p>
+            <h3>本次业务信息</h3>
+            <p>{collectionTaskDraft.touchMode === "PRECISION" ? "用于精准判断 A/B/C 与生成上下文话术。" : "用于 A/B/C 上下文话术和 D 类产品话术。"}</p>
           </div>
           <RuleFields
             value={collectionTaskDraft.rules}
@@ -3021,6 +3118,7 @@ export default function Operations({
               replyTask.paused ||
               Boolean(replyTask.followups[reply?.lead || 0]) ||
               !taskReady(replyTask) ||
+              !replyQuotaAvailable ||
               !identityOK ||
               Boolean(
                 replyTask && reply && replyTask.todos[reply.lead] !== "待确认",
@@ -3034,6 +3132,7 @@ export default function Operations({
                 replyTask.paused ||
                 replyTask.followups[reply.lead] ||
                 !taskReady(replyTask) ||
+                !replyQuotaAvailable ||
                 !identityOK ||
                 replyTask.todos[reply.lead] !== "待确认" ||
                 (reply.contextChanged && !reply.reviewedLatest)
@@ -3041,6 +3140,7 @@ export default function Operations({
                 return;
               setW((old) => ({
                 ...old,
+                quota: reserveQuota(old.quota, replyQuotaGrade as QuotaGrade),
                 tasks: old.tasks.map((t) =>
                   t.id === reply.task
                     ? {

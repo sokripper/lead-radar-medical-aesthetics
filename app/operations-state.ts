@@ -125,13 +125,13 @@ export function removeSubmitted<T extends {ids:number[];blocked:number[];include
     copyKeys:Object.fromEntries(Object.entries(queue.copyKeys||{}).filter(([id])=>keep(Number(id))))};
 }
 
-export function mergePreparedQueue<T extends {ids:number[];blocked:number[];included:number[];drafts:Record<number,string>;edited:number[];copyKeys?:Record<number,string>}>(queue:T, prepared:{candidates:number[];blocked:number[];matched:number[]}, generated:Record<number,string>, key:string):T {
+export function mergePreparedQueue<T extends {ids:number[];blocked:number[];included:number[];drafts:Record<number,string>;edited:number[];copyKeys?:Record<number,string>}>(queue:T, prepared:{candidates:number[];blocked:number[];matched:number[]}, generated:Record<number,string>, keys:string|Record<number,string>):T {
   const fresh = Object.entries(generated).filter(([id,text]) => prepared.matched.includes(Number(id)) && queue.drafts[Number(id)] === undefined && text.trim());
   return {...queue,
     ids:[...new Set([...queue.ids,...prepared.candidates])],
     blocked:[...new Set([...queue.blocked.filter(id=>!prepared.candidates.includes(id)),...prepared.blocked])],
     included:prepared.matched,
     drafts:{...queue.drafts,...Object.fromEntries(fresh)},
-    copyKeys:{...queue.copyKeys,...Object.fromEntries(fresh.map(([id])=>[id,key]))},
+    copyKeys:{...queue.copyKeys,...Object.fromEntries(fresh.map(([id])=>[id,typeof keys==='string'?keys:keys[Number(id)]]))},
   };
 }

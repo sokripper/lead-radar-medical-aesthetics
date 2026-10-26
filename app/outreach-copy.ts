@@ -1,4 +1,5 @@
 import type { Prospect } from "./operations-state";
+import type { ScreeningRules } from "./workflow-config";
 
 export type OutreachProfile = {
   approach: "experience" | "cooperation";
@@ -109,6 +110,20 @@ export function openingCopy(lead: Context, profile: OutreachProfile) {
     disclosure && !experience.includes(disclosure) ? disclosure : "",
     experience && !hasOffer ? "需要的话，可以给你推荐。" : "",
   ].filter(Boolean).join("\n");
+}
+
+// D 类没有足够的业务上下文，只能使用已确认的客户产品信息。
+// 原型按用户 id 稳定轮换文案，不伪装成读过对方的帖子或评论。
+export function productOpeningCopy(rules:Pick<ScreeningRules,'offering'|'audience'|'businessNeeds'>,seed:number) {
+  const offering=rules.offering.trim();
+  const needs=rules.businessNeeds.split(/[\n；;]/).map(item=>item.trim()).filter(Boolean);
+  const need=needs[seed%needs.length]||rules.businessNeeds.trim();
+  const variants=[
+    `哈喽～我们主要提供${offering}。如果你近期有${need}相关需求，我可以把服务介绍发你看看。`,
+    `哈喽～想和你简单介绍一下，我们在做${offering}。如果后续有${need}方面的计划，可以先发一份资料给你参考。`,
+    `哈喽～我们这边专注${offering}。不确定你近期是否有${need}的规划，如果有，我可以把合作方式发你了解。`,
+  ];
+  return variants[seed%variants.length];
 }
 
 export function followupCopy(lead: Context | undefined) {

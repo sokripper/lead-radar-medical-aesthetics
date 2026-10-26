@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {emptyOutreachProfile,restoreOutreachProfile,matchingExperience,openingCopy,followupCopy,openingTemplates,outreachIssue,outreachKey} from '../app/outreach-copy.ts';
+import {emptyOutreachProfile,restoreOutreachProfile,matchingExperience,openingCopy,followupCopy,openingTemplates,outreachIssue,outreachKey,productOpeningCopy} from '../app/outreach-copy.ts';
 import {readyRecipients,removeSubmitted,mergePreparedQueue} from '../app/operations-state.ts';
 const fixtures=[
   {id:1,intent:'超声炮 / 面部提升',context:'想做超声炮，有机构推荐吗？',location:'上海',source:'小红书评论'},
@@ -20,6 +20,15 @@ test('the two approved batch templates are the first-outreach paths',()=>{
       assert.doesNotMatch(text,/\{项目\}|先说一声|你好呀|我是|看到你在|面诊过没|哪家没|？/);
       assert.equal(text.includes('现在也有合作'),approach==='cooperation');
     }
+  }
+});
+test('product copy uses business information without pretending to know the recipient context',()=>{
+  const rules={offering:'小红书代运营服务',audience:'品牌与商家',businessNeeds:'寻找代运营；提升账号转化'};
+  const messages=[0,1,2].map(seed=>productOpeningCopy(rules,seed));
+  assert.equal(new Set(messages).size,3);
+  for(const text of messages){
+    assert.match(text,/小红书代运营服务/);
+    assert.doesNotMatch(text,/看到你|你的帖子|你的评论|注意到你/);
   }
 });
 test('missing, ambiguous or unconfirmed materials never silently switch to a question opener',()=>{

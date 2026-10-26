@@ -3,24 +3,38 @@ import { useState } from "react";
 import { StatusPill } from "./WorkspaceUI";
 import {
   type ManagedAccount,
+  type QuotaGrade,
+  type TenantQuota,
   type ManagedPlatform,
   type ManagedAccountStatus,
   accountDraftError,
   demoOperators,
+  quotaRemaining,
 } from "./account-management";
 
 const blank = (): ManagedAccount => ({
   id: "", platform: "小红书", name: "", handle: "", parentId: "", status: "待运维", assignedTo: [],
 });
 
-export default function AccountAdmin({ accounts, onChange }: {
+export default function AccountAdmin({ accounts, onChange, quota, onQuotaChange }: {
   accounts: ManagedAccount[];
   onChange: (accounts: ManagedAccount[]) => void;
+  quota: TenantQuota;
+  onQuotaChange: (quota: TenantQuota) => void;
 }) {
   const [draft, setDraft] = useState<ManagedAccount | null>(null);
   const [editingId, setEditingId] = useState("");
   const [error, setError] = useState("");
   const [filter, setFilter] = useState<"全部" | ManagedPlatform>("全部");
+  const [quotaTotal, setQuotaTotal] = useState<Record<QuotaGrade, string>>({ A: String(quota.A.total), B: String(quota.B.total), C: String(quota.C.total), D: String(quota.D.total) });
+  const quotaGrades: QuotaGrade[] = ["A", "B", "C", "D"];
+  const quotaStatus = quotaGrades.some(grade => quotaRemaining(quota, grade) > 0) ? "额度正常" : "额度不足";
+  const quotaDescriptions:Record<QuotaGrade,string> = {
+    A:"明确合作或近期需求",
+    B:"存在可承接的业务需求",
+    C:"间接机会或弱意向",
+    D:"无明确意向，使用产品话术",
+  };
   const primaryChoices = accounts.filter(account => account.platform === draft?.platform && !account.parentId && account.id !== editingId);
   const shown = accounts.filter(account => filter === "全部" || account.platform === filter);
   const open = (account?: ManagedAccount) => {
@@ -42,6 +56,38 @@ export default function AccountAdmin({ accounts, onChange }: {
       <button className="button primary" onClick={() => open()}>新增账号</button>
     </div>
     <p className="prototype-note">管理权限页面演示 · 原型暂未接入真实权限校验；分配与状态仅保存在当前浏览器。</p>
+    <section className="surface quota-overview" aria-label="主体共享触达额度">
+      <div className="quota-heading">
+        <div><h2>主体触达额度</h2><p>额度按 A/B/C/D 意向等级分别统计，与精准或批量触达模式无关。每成功发出一条消息，从该用户对应等级的额度池扣 1 次。</p></div>
+        <StatusPill status={quotaStatus} />
+      </div>
+      <div className="quota-buckets">
+        {quotaGrades.map(grade => {
+          const bucket = quota[grade];
+          const remaining = quotaRemaining(quota, grade);
+          const usage = bucket.total ? Math.min(100, Math.round(((bucket.used + bucket.reserved) / bucket.total) * 100)) : 100;
+          const label = `${grade} 类额度`;
+          return <section className={`quota-bucket quota-bucket-${grade.toLowerCase()}`} key={grade}>
+            <header><div><strong>{label}</strong><span>{quotaDescriptions[grade]}</span></div><b>{remaining.toLocaleString()} 可用</b></header>
+            <div className="quota-metrics">
+              <div><span>总额度</span><strong>{bucket.total.toLocaleString()}</strong></div>
+              <div><span>已使用</span><strong>{bucket.used.toLocaleString()}</strong></div>
+              <div><span>发送中预占</span><strong>{bucket.reserved.toLocaleString()}</strong></div>
+            </div>
+            <div className="quota-progress" aria-label={`${label}已使用 ${usage}%`}><i style={{ width: `${usage}%` }} /></div>
+            <div className="quota-actions">
+              <label className="field">登记总额度<input type="number" min={bucket.used + bucket.reserved} value={quotaTotal[grade]} onChange={event => setQuotaTotal(old => ({ ...old, [grade]: event.target.value }))} /></label>
+              <button className="button secondary" onClick={() => {
+                const total = Number(quotaTotal[grade]);
+                if (!Number.isFinite(total) || total < bucket.used + bucket.reserved) return;
+                onQuotaChange({ ...quota, [grade]: { ...bucket, total: Math.floor(total) } });
+              }}>更新额度</button>
+            </div>
+          </section>;
+        })}
+      </div>
+      <p className="quota-footnote">某一等级额度不足时，只限制该等级新增发送；移除超额部分后，其他等级仍可继续。精准触达使用 A/B/C，批量触达可使用 A/B/C/D。</p>
+    </section>
     <section className="surface admin-accounts">
       <div className="admin-accounts-header"><div><h2>平台账号</h2><p>个人侧只会看到分配给自己的可用账号，不展示登录或云电脑配置。</p></div>
         <label className="field">平台筛选<select aria-label="账号平台筛选" value={filter} onChange={event => setFilter(event.target.value as typeof filter)}><option>全部</option><option>小红书</option><option>抖音</option></select></label>
