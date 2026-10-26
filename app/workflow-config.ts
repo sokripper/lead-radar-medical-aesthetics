@@ -9,10 +9,10 @@ export const businessSceneOptions = [
 export type BusinessSceneKey = typeof businessSceneOptions[number]['key'];
 export type TouchMode = 'PRECISION' | 'BULK';
 export const touchModeOptions:{key:TouchMode;label:string;description:string;note:string}[] = [
-  {key:'PRECISION',label:'精准触达',description:'完成意向分类，仅 A、B、C 进入可触达名单。',note:'A/B/C 结合帖子或评论上下文生成话术，D 不发送。'},
-  {key:'BULK',label:'批量触达',description:'通过基础校验和查重后，平台返回的数据全量进入可触达名单。',note:'A/B/C 使用上下文话术，D 仅根据客户产品信息生成差异化产品话术。'},
+  {key:'PRECISION',label:'G 类模型',description:'使用高精度筛选模型处理本次数据。',note:''},
+  {key:'BULK',label:'A 类模型',description:'使用标准筛选模型处理本次数据。',note:''},
 ];
-export const touchModeLabel=(mode:TouchMode)=>touchModeOptions.find(item=>item.key===mode)?.label||'精准触达';
+export const touchModeLabel=(mode:TouchMode)=>touchModeOptions.find(item=>item.key===mode)?.label||'G 类模型';
 
 export type ScreeningRules = {
   revision:number; industry:string; offering:string; audience:string; businessNeeds:string; region:string;
@@ -23,7 +23,7 @@ export type ScreeningRules = {
 export const defaultRules=():ScreeningRules=>({
   revision:1,industry:'新媒体运营',offering:'小红书、抖音代运营与达人投放服务',audience:'有新媒体增长需求的品牌方和商家',businessNeeds:'寻找代运营或达人合作；招聘运营；存在流量、转化、投放或账号运营问题',region:'全国',
   contactableScenes:['service','creator','hiring','problem'],
-  grades:{A:'明确问合作、价格、联系方式，或表达近期需求。',B:'有可承接的业务需求，正在了解、对比或寻找解决方案。',C:'存在间接机会或需要进一步确认，不因昵称中性或身份暂不明而直接排除。',D:'没有识别出明确业务意向或可用上下文；精准触达不发送，批量触达可使用产品话术。'},
+  grades:{A:'明确问合作、价格、联系方式，或表达近期需求。',B:'有可承接的业务需求，正在了解、对比或寻找解决方案。',C:'存在间接机会或需要进一步确认，不因昵称中性或身份暂不明而直接排除。',D:'没有识别出明确业务意向或可用上下文；G 类模型不发送，A 类模型可使用产品话术。'},
   exclusions:'',
   positive:'A：怎么联系，想了解代运营合作。\nB：品牌在找达人做种草，正在看合作方案。\nC：正在招运营，团队方案还在评估。',
   negative:'C：谢谢分享，先收藏。\nD：本月活动，接种草合作。',

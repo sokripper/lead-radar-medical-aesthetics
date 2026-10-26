@@ -10,52 +10,51 @@ export type ManagedAccount = {
   assignedTo: string[];
 };
 
-export type QuotaGrade = "A" | "B" | "C" | "D";
+export type QuotaModel = "A" | "G";
 export type QuotaBucket = {
   total: number;
   used: number;
   reserved: number;
 };
-export type TenantQuota = Record<QuotaGrade, QuotaBucket>;
+export type TenantQuota = Record<QuotaModel, QuotaBucket>;
 
 export const demoQuota = (): TenantQuota => ({
-  A: { total: 5000, used: 1280, reserved: 4 },
-  B: { total: 8000, used: 2100, reserved: 4 },
-  C: { total: 12000, used: 3200, reserved: 2 },
-  D: { total: 15000, used: 4800, reserved: 6 },
+  A: { total: 15000, used: 4800, reserved: 6 },
+  G: { total: 8000, used: 2100, reserved: 4 },
 });
 
-export function quotaRemaining(quota: TenantQuota, grade: QuotaGrade) {
-  const bucket = quota[grade];
+export function quotaRemaining(quota: TenantQuota, model: QuotaModel) {
+  const bucket = quota[model];
   return Math.max(0, bucket.total - bucket.used - bucket.reserved);
 }
 
-export function quotaCanReserve(quota: TenantQuota, needs: Record<QuotaGrade, number>) {
-  return (Object.keys(needs) as QuotaGrade[]).every(grade => needs[grade] <= quotaRemaining(quota, grade));
+export function quotaCanReserve(quota: TenantQuota, needs: Record<QuotaModel, number>) {
+  return (Object.keys(needs) as QuotaModel[]).every(model => needs[model] <= quotaRemaining(quota, model));
 }
 
-export function reserveQuota(quota: TenantQuota, grade: QuotaGrade, count = 1): TenantQuota {
-  return { ...quota, [grade]: { ...quota[grade], reserved: quota[grade].reserved + count } };
+export function reserveQuota(quota: TenantQuota, model: QuotaModel, count = 1): TenantQuota {
+  return { ...quota, [model]: { ...quota[model], reserved: quota[model].reserved + count } };
 }
 
-export function settleQuota(quota: TenantQuota, grade: QuotaGrade, count = 1): TenantQuota {
+export function settleQuota(quota: TenantQuota, model: QuotaModel, count = 1): TenantQuota {
   return {
     ...quota,
-    [grade]: {
-      ...quota[grade],
-      used: quota[grade].used + count,
-      reserved: Math.max(0, quota[grade].reserved - count),
+    [model]: {
+      ...quota[model],
+      used: quota[model].used + count,
+      reserved: Math.max(0, quota[model].reserved - count),
     },
   };
 }
 
-export function releaseQuota(quota: TenantQuota, grade: QuotaGrade, count = 1): TenantQuota {
-  return { ...quota, [grade]: { ...quota[grade], reserved: Math.max(0, quota[grade].reserved - count) } };
+export function releaseQuota(quota: TenantQuota, model: QuotaModel, count = 1): TenantQuota {
+  return { ...quota, [model]: { ...quota[model], reserved: Math.max(0, quota[model].reserved - count) } };
 }
 
 export function restoreQuota(value: unknown): TenantQuota {
   if (!value || typeof value !== "object") return demoQuota();
   const saved = value as Partial<TenantQuota>;
+  const gradeLegacy = value as Record<"A" | "B" | "C" | "D", Partial<QuotaBucket>>;
   const modeLegacy = value as {PRECISION?:Partial<QuotaBucket>;BULK?:Partial<QuotaBucket>};
   const restoreBucket = (bucket: Partial<QuotaBucket>): QuotaBucket => {
     const total = Math.max(0, Number(bucket.total) || 0);
@@ -63,15 +62,19 @@ export function restoreQuota(value: unknown): TenantQuota {
     const reserved = Math.max(0, Math.min(total - used, Number(bucket.reserved) || 0));
     return { total, used, reserved };
   };
+  const mergeBuckets = (buckets: Partial<QuotaBucket>[]): QuotaBucket => restoreBucket({
+    total: buckets.reduce((sum, bucket) => sum + (Number(bucket?.total) || 0), 0),
+    used: buckets.reduce((sum, bucket) => sum + (Number(bucket?.used) || 0), 0),
+    reserved: buckets.reduce((sum, bucket) => sum + (Number(bucket?.reserved) || 0), 0),
+  });
   const defaults = demoQuota();
-  if (saved.A && saved.B && saved.C && saved.D) return {
-    A: restoreBucket(saved.A), B: restoreBucket(saved.B), C: restoreBucket(saved.C), D: restoreBucket(saved.D),
-  };
-  if (saved.A && saved.B) return {
-    A: restoreBucket(saved.A), B: restoreBucket(saved.B), C: defaults.C, D: defaults.D,
+  if (saved.A && saved.G) return { A: restoreBucket(saved.A), G: restoreBucket(saved.G) };
+  if (gradeLegacy.A && gradeLegacy.B && gradeLegacy.C && gradeLegacy.D) return {
+    A: mergeBuckets([gradeLegacy.A, gradeLegacy.B, gradeLegacy.C, gradeLegacy.D]),
+    G: mergeBuckets([gradeLegacy.A, gradeLegacy.B, gradeLegacy.C]),
   };
   if (modeLegacy.PRECISION && modeLegacy.BULK) return {
-    A: restoreBucket(modeLegacy.PRECISION), B: restoreBucket(modeLegacy.BULK), C: defaults.C, D: defaults.D,
+    A: restoreBucket(modeLegacy.BULK), G: restoreBucket(modeLegacy.PRECISION),
   };
   return defaults;
 }

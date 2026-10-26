@@ -25,7 +25,7 @@ import { RuleSummary, RuleFields } from "./RuleFields";
 import AccountAdmin from "./AccountAdmin";
 import {
   type ManagedAccount,
-  type QuotaGrade,
+  type QuotaModel,
   type TenantQuota,
   demoAccounts,
   demoQuota,
@@ -115,7 +115,7 @@ type Task = {
   name: string;
   senderAccountId?: string;
   senderAccountName?: string;
-  quotaGrades: Record<number, QuotaGrade>;
+  quotaModel: QuotaModel;
   ids: number[];
   texts: Record<number, string>;
   results: Record<number, SendStatus>;
@@ -205,17 +205,17 @@ const labels = {
   D: "无明确意向",
   待判断: "待判断",
 };
-const quotaGradeKeys:QuotaGrade[] = ["A", "B", "C", "D"];
-const quotaGradeOf = (grade:Prospect["grade"]):QuotaGrade => quotaGradeKeys.includes(grade as QuotaGrade) ? grade as QuotaGrade : "D";
-const quotaNeedsOf = (recipients:Prospect[],grades:Record<number,Prospect["grade"]>):Record<QuotaGrade,number> =>
-  recipients.reduce((needs,lead)=>({ ...needs, [quotaGradeOf(grades[lead.id])]: needs[quotaGradeOf(grades[lead.id])] + 1 }), { A:0, B:0, C:0, D:0 });
+const quotaModelKeys:QuotaModel[] = ["A", "G"];
+const quotaModelOf = (mode:TouchMode):QuotaModel => mode === "BULK" ? "A" : "G";
+const quotaNeedsOf = (recipients:Prospect[],mode:TouchMode):Record<QuotaModel,number> =>
+  mode === "BULK" ? { A:recipients.length, G:0 } : { A:0, G:recipients.length };
 const sharedTasks = [
   { code: "6b27c68f027e412680393da7b322516e", name: "社媒获客_小红书2", status: "已入库" },
 ] as const;
 const taskStatusCopy: Record<CollectionTaskStatus, { title: string; detail: string }> = {
   待配置: {
-    title: "已自动同步任务，请选择触达模式",
-    detail: "任务 Key 和名称来自羚羊共享库。选择精准或批量触达，并补充业务信息后即可开始处理。",
+    title: "已自动同步任务，请选择筛选模型",
+    detail: "任务 Key 和名称来自羚羊共享库。选择 A 类或 G 类模型，并补充业务信息后即可开始处理。",
   },
   等待数据: {
     title: "等待共享库数据入库",
@@ -223,7 +223,7 @@ const taskStatusCopy: Record<CollectionTaskStatus, { title: string; detail: stri
   },
   可解析: {
     title: "数据已就绪，可以开始处理",
-    detail: "开始前仍可核对触达模式和业务信息；开始后，本次模式与规则将锁定为任务快照。",
+    detail: "开始前仍可核对筛选模型和业务信息；开始后，本次模型与规则将锁定为任务快照。",
   },
   解析中: {
     title: "正在处理任务数据",
@@ -438,7 +438,9 @@ export default function Operations({
             },
             tasks: x.tasks.map((t: Task) => ({
               ...t,
-              quotaGrades: t.quotaGrades || Object.fromEntries(t.ids.map(id => [id, quotaGradeOf(x.grades[id])])),
+              quotaModel: t.quotaModel === "A" || t.quotaModel === "G"
+                ? t.quotaModel
+                : Object.values((t as Task & {quotaGrades?:Record<number,string>}).quotaGrades || {}).includes("D") ? "A" : "G",
               senderAccountId: t.senderAccountId || (x.schema === 4 ? "xhs-main" : undefined),
               senderAccountName: t.senderAccountName || (x.schema === 4 ? "小红书品牌号" : undefined),
               todos: t.todos || {},
@@ -541,26 +543,27 @@ export default function Operations({
   const copyPending = leads.filter(l => w.queue.ids.includes(l.id) && !w.queue.blocked.includes(l.id) && copyIssue(l));
   const personalAccounts = assignedAccounts(w.managedAccounts);
   const selectedAccount = personalAccounts.find(account => account.id === w.sender);
-  const remainingQuota:Record<QuotaGrade,number> = {
-    A:quotaRemaining(w.quota,"A"), B:quotaRemaining(w.quota,"B"), C:quotaRemaining(w.quota,"C"), D:quotaRemaining(w.quota,"D"),
+  const remainingQuota:Record<QuotaModel,number> = {
+    A:quotaRemaining(w.quota,"A"), G:quotaRemaining(w.quota,"G"),
   };
-  const remainingQuotaSummary = quotaGradeKeys.map(grade=>`${grade} ${remainingQuota[grade].toLocaleString()}`).join(" · ");
+  const remainingQuotaSummary = quotaModelKeys.map(model=>`${model} 类模型 ${remainingQuota[model].toLocaleString()}`).join(" · ");
   const senderReady = accountReady(w.managedAccounts, w.sender);
   const taskAccount = (t: Task) => w.managedAccounts.find(account => account.id === t.senderAccountId);
   const taskReady = (t: Task) => accountReady(w.managedAccounts, t.senderAccountId || "");
   const ready = identityOK && senderReady
     ? readyRecipients(leads, w.queue, w.grades, occupied, { 小红书: true }, copyPending.map(l => l.id), leads.filter(l=>available(l.id)).map(l=>l.id)).filter(l => available(l.id))
     : [];
-  const readyQuotaNeeds = quotaNeedsOf(ready, w.grades);
+  const activeQuotaModel = quotaModelOf(activeTouchMode);
+  const readyQuotaNeeds = quotaNeedsOf(ready, activeTouchMode);
   const readyQuotaAvailable = quotaCanReserve(w.quota, readyQuotaNeeds);
-  const readyQuotaSummary = quotaGradeKeys.filter(grade=>readyQuotaNeeds[grade]>0).map(grade=>`${grade} ${readyQuotaNeeds[grade]} 次`).join(" · ");
-  const quotaShortageSummary = quotaGradeKeys.filter(grade=>readyQuotaNeeds[grade]>remainingQuota[grade]).map(grade=>`${grade} 需 ${readyQuotaNeeds[grade]} / 余 ${remainingQuota[grade]}`).join(" · ");
+  const readyQuotaSummary = `${activeQuotaModel} 类模型 ${ready.length} 次`;
+  const quotaShortageSummary = `${activeQuotaModel} 类模型需 ${readyQuotaNeeds[activeQuotaModel]} / 余 ${remainingQuota[activeQuotaModel]}`;
   const detailLead = leads.find((l) => l.id === detail);
   const task = w.tasks.find((t) => t.id === convo?.task);
   const person = leads.find((l) => l.id === convo?.lead);
   const replyTask = w.tasks.find((t) => t.id === reply?.task);
-  const replyQuotaGrade = reply ? replyTask?.quotaGrades?.[reply.lead] || quotaGradeOf(w.grades[reply.lead]) : null;
-  const replyQuotaAvailable = Boolean(replyQuotaGrade && quotaRemaining(w.quota, replyQuotaGrade) > 0);
+  const replyQuotaModel = reply ? replyTask?.quotaModel || "G" : null;
+  const replyQuotaAvailable = Boolean(replyQuotaModel && quotaRemaining(w.quota, replyQuotaModel) > 0);
   const unread = w.tasks.reduce(
     (n, t) =>
       n +
@@ -750,7 +753,7 @@ export default function Operations({
           name: `触达任务 ${old.tasks.length + 1}`,
           senderAccountId: old.sender,
           senderAccountName: old.managedAccounts.find(account => account.id === old.sender)?.name || "未指定账号",
-          quotaGrades: Object.fromEntries(ready.map(lead => [lead.id, quotaGradeOf(old.grades[lead.id])])),
+          quotaModel: activeQuotaModel,
           ids,
           texts: Object.fromEntries(
             ready.map((l) => [l.id, old.queue.drafts[l.id]]),
@@ -771,8 +774,8 @@ export default function Operations({
         },
       ],
       queue: removeSubmitted(old.queue, ids),
-      quota: quotaGradeKeys.reduce(
-        (quota, grade) => reserveQuota(quota, grade, readyQuotaNeeds[grade]),
+      quota: quotaModelKeys.reduce(
+        (quota, model) => reserveQuota(quota, model, readyQuotaNeeds[model]),
         old.quota,
       ),
       monitor: emptyMonitoring(),
@@ -796,7 +799,7 @@ export default function Operations({
       const tasks = old.tasks.map((t) => {
         if (t.id !== tid) return t;
         const key = follow ? "followResults" : "results";
-        const quotaGrade = t.quotaGrades?.[id] || quotaGradeOf(old.grades[id]);
+        const quotaModel = t.quotaModel;
         if (follow && ["已关闭", "已转人工"].includes(t.todos[id])) return t;
         const from = t[key][id] || "待执行";
         if (
@@ -814,14 +817,14 @@ export default function Operations({
         )
           return t;
         if (from === "发送失败" && event === "retry") {
-          if (quotaRemaining(quota, quotaGrade) <= 0) return t;
-          quota = reserveQuota(quota, quotaGrade);
+          if (quotaRemaining(quota, quotaModel) <= 0) return t;
+          quota = reserveQuota(quota, quotaModel);
         }
         const next = transitionSend(from, event);
         if (next !== from && next === "发送成功") {
-          quota = settleQuota(quota, quotaGrade);
+          quota = settleQuota(quota, quotaModel);
         } else if (next !== from && ["发送失败", "已取消"].includes(next)) {
-          quota = releaseQuota(quota, quotaGrade);
+          quota = releaseQuota(quota, quotaModel);
         }
         return {
           ...t,
@@ -1079,7 +1082,7 @@ export default function Operations({
   function exportList() {
     const data = exportRows(exportScope, rows, w.selected, visible);
     const csv = [
-      ["用户", "平台", "触达模式", "意向等级", "话术类型", "业务场景", "触达建议", "地区", "评论", "依据", "联系状态"],
+      ["用户", "平台", "筛选模型", "意向等级", "话术类型", "业务场景", "触达建议", "地区", "评论", "依据", "联系状态"],
       ...data.map((l) => [
         l.name,
         platform(l),
@@ -1135,7 +1138,7 @@ export default function Operations({
       edited: w.queue.edited.filter(id => !candidates.some(l => l.id === id)),
     } });
     setRegenerate(null);
-    setNotice(`已按当前触达模式重新生成 ${candidates.length} 条；其他草稿保留。`);
+    setNotice(`已按当前筛选模型重新生成 ${candidates.length} 条；其他草稿保留。`);
   }
   function openRules() {
     setRuleDraft({ ...w.rules, grades: { ...w.rules.grades }, contactableScenes:[...w.rules.contactableScenes] });
@@ -1270,8 +1273,8 @@ export default function Operations({
             </select>
           </label>
           {!personalAccounts.length && <p className="account-picker-message" role="alert">暂无分配给你的账号，请联系管理员分配。</p>}
-          {quotaGradeKeys.every(grade=>remainingQuota[grade]<=0) && <p className="account-picker-message" role="alert">A/B/C/D 额度均不足，新的发送已暂停，请联系管理员补充额度。</p>}
-          {quotaGradeKeys.some(grade=>remainingQuota[grade]>0) && <p className="account-picker-message quota-ok">剩余可用额度：{remainingQuotaSummary}</p>}
+          {quotaModelKeys.every(model=>remainingQuota[model]<=0) && <p className="account-picker-message" role="alert">A/G 模型额度均不足，新的发送已暂停，请联系管理员补充额度。</p>}
+          {quotaModelKeys.some(model=>remainingQuota[model]>0) && <p className="account-picker-message quota-ok">剩余可用额度：{remainingQuotaSummary}</p>}
         </section>
       )}
       {saveError && (
@@ -1311,7 +1314,7 @@ export default function Operations({
               ) : (
                 <div className="collection-task-table-wrap">
                   <table className="collection-task-table">
-                    <thead><tr><th>任务名称</th><th>羚羊任务 ID</th><th>触达模式</th><th>业务规则</th><th>创建时间</th><th>状态</th><th>操作</th></tr></thead>
+                    <thead><tr><th>任务名称</th><th>羚羊任务 ID</th><th>筛选模型</th><th>业务规则</th><th>创建时间</th><th>状态</th><th>操作</th></tr></thead>
                     <tbody>
                       {w.collectionTasks.map((task) => (
                         <tr key={task.id}>
@@ -1353,13 +1356,13 @@ export default function Operations({
               <div className="task-workspace-summary">
                 <div><span>状态</span><StatusPill status={activeCollectionTask.status} /></div>
                 <div><span>平台</span><strong>{activeCollectionTask.platform}</strong></div>
-                <div><span>触达模式</span><strong>{touchModeLabel(activeCollectionTask.touchMode)}</strong></div>
+                <div><span>筛选模型</span><strong>{touchModeLabel(activeCollectionTask.touchMode)}</strong></div>
                 <div><span>业务范围</span><strong>{activeCollectionTask.status === "待配置" ? "待配置" : activeCollectionTask.rules.industry}</strong></div>
               </div>
               <nav className="task-workspace-tabs" aria-label="任务工作区">
                 {[
                   ["overview", "任务概览"],
-                  ["results", activeCollectionTask.touchMode === "BULK" ? "批量名单" : "筛选结果"],
+                  ["results", activeCollectionTask.touchMode === "BULK" ? "A 类模型结果" : "G 类模型结果"],
                   ["attention", `需要处理${attention.length ? `（${attention.length}）` : ""}`],
                   ["rules", "规则快照"],
                 ].map(([key, label]) => (
@@ -1382,7 +1385,7 @@ export default function Operations({
                 <p>{taskStatusCopy[activeCollectionTask.status].detail}</p>
               </div>
               <ol className="task-progress-steps">
-                {["同步任务", "选择模式与规则", "处理数据", "处理结果"].map((step, index) => {
+                {["同步任务", "选择模型与规则", "处理数据", "处理结果"].map((step, index) => {
                   const progress = activeCollectionTask.status === "待配置" ? 1 : ["等待数据", "可解析"].includes(activeCollectionTask.status) ? 2 : activeCollectionTask.status === "解析中" ? 3 : 4;
                   return <li key={step} className={index < progress ? "done" : ""}><span>{index + 1}</span>{step}</li>;
                 })}
@@ -1395,7 +1398,7 @@ export default function Operations({
                 <div><h2>{activeCollectionTask.status === "解析完成" ? "本次规则快照" : "当前业务规则"}</h2><p>规则只作用于当前任务；开始解析后锁定。</p></div>
                 {["待配置", "等待数据", "可解析"].includes(activeCollectionTask.status) && <button className="button secondary" onClick={() => openEditCollectionTask(activeCollectionTask)}>{activeCollectionTask.status === "待配置" ? "配置业务规则" : "编辑规则"}</button>}
               </div>
-              <div className="mode-snapshot"><strong>{touchModeLabel(activeCollectionTask.touchMode)}</strong><span>{touchModeOptions.find(item=>item.key===activeCollectionTask.touchMode)?.note}</span></div>
+              <div className="mode-snapshot"><strong>{touchModeLabel(activeCollectionTask.touchMode)}</strong><span>{touchModeOptions.find(item=>item.key===activeCollectionTask.touchMode)?.description}</span></div>
               <RuleSummary rules={activeCollectionTask.rules} />
             </section>
           )}
@@ -1428,7 +1431,7 @@ export default function Operations({
             <div className="section-heading result-heading">
               <div>
                 <h2>
-                  {view === "leads" ? "历史名单" : activeTouchMode === "BULK" ? "批量触达名单" : "精准触达结果"}{" "}
+                  {view === "leads" ? "历史名单" : `${touchModeLabel(activeTouchMode)}结果`}{" "}
                   <span className="count">{visible.length}</span>
                   {visible.length !== completed.length && <small className="result-total"> / 共 {completed.length}</small>}
                 </h2>
@@ -1669,7 +1672,7 @@ export default function Operations({
                         <div className="scene-cell">
                           <strong>{l.businessScene || "待判断"}</strong>
                           <span className={`touch-tag touch-${reachability(l)==='优先触达'?'priority':reachability(l)==='建议触达'?'recommended':reachability(l)==='探索触达'?'explore':'hold'}`}>
-                            {activeTouchMode === "BULK" ? "批量触达" : contactableForMode(l) ? reachability(l) : "不触达"}
+                            {activeTouchMode === "BULK" ? "A 类模型" : contactableForMode(l) ? reachability(l) : "不触达"}
                           </span>
                           <span className={`copy-type-tag ${productCopy(l) ? "product" : "context"}`}>{productCopy(l) ? "产品话术" : "上下文话术"}</span>
                         </div>
@@ -2241,7 +2244,7 @@ export default function Operations({
           <>
             <div>
               <strong>{ready.length} 条可提交</strong>
-              <small>{readyQuotaAvailable ? `提交后按等级预占：${readyQuotaSummary || "无"}` : `额度不足：${quotaShortageSummary}`}</small>
+              <small>{readyQuotaAvailable ? `提交后预占：${readyQuotaSummary}` : `额度不足：${quotaShortageSummary}`}</small>
             </div>
             <button
               className="button primary"
@@ -2254,8 +2257,8 @@ export default function Operations({
         }
       >
         <section className="settings-section">
-          <h3>本批模式：{touchModeLabel(activeTouchMode)}</h3>
-          <p>{activeTouchMode === "BULK" ? "A/B/C 使用上下文话术；D 使用基于客户产品信息生成的产品话术。" : "仅发送 A/B/C，并结合帖子或评论上下文生成沟通话术。"}</p>
+          <h3>本批模型：{touchModeLabel(activeTouchMode)}</h3>
+          <p>{activeTouchMode === "BULK" ? "覆盖所有可触达数据；A/B/C 使用上下文话术，D 使用客户产品信息生成话术。" : "仅处理 A/B/C，并结合帖子或评论上下文生成沟通话术。"}</p>
           <p className="field-hint">上下文话术模板：{w.outreach.greeting}～{w.outreach.experience}。设置变化不会覆盖旧草稿，可确认后统一重新生成。</p>
           <button className="button secondary" onClick={() => openSettings(true)}>设置批量话术</button>
           <button className="button text" disabled={!identityOK || !w.queue.included.length} onClick={() => setRegenerate(-1)}>按当前话术重新生成本批</button>
@@ -2269,7 +2272,7 @@ export default function Operations({
           </div>
           <p className="field-hint">本批用户已进入当前账号的待发送队列，发送前不能临时改派。</p>
           {!senderReady && <p role="alert">{personalAccounts.length ? "系统未找到状态正常的已分配账号。" : "暂无分配给你的账号，请联系管理员。"}</p>}
-          {senderReady && !readyQuotaAvailable && <p role="alert">部分意向等级额度不足（{quotaShortageSummary}），请减少对应等级的数量或联系管理员补充额度。</p>}
+          {senderReady && !readyQuotaAvailable && <p role="alert">当前模型额度不足（{quotaShortageSummary}），请减少发送数量或联系管理员补充额度。</p>}
           <h3>后续回复检查</h3>
           <label className="checkbox-label">
             <input
@@ -2430,12 +2433,12 @@ export default function Operations({
               disabled={!collectionTaskDraft.name.trim() || !collectionTaskDraft.sourceTaskCode.trim() || Boolean(rulesError(collectionTaskDraft.rules))}
               onClick={createCollectionTask}
             >
-              保存模式与规则
+              保存模型与规则
             </button>
           </>
         }
       >
-        <p>任务 Key 与名称由系统从羚羊共享库自动同步。先选择本次触达模式，再补充业务信息；开始处理后将锁定本次配置。</p>
+        <p>任务 Key 与名称由系统从羚羊共享库自动同步。先选择本次筛选模型，再补充业务信息；开始处理后将锁定本次配置。</p>
         <div className="collection-task-form">
           <div className="collection-task-basics">
             <label className="field">
@@ -2456,18 +2459,18 @@ export default function Operations({
             </label>
           </div>
           <fieldset className="touch-mode-selector">
-            <legend>选择触达模式</legend>
-            <p>触达模式只影响名单范围和话术策略；额度始终按 A/B/C/D 分别扣减。开始处理后不可切换模式。</p>
+            <legend>选择筛选模型</legend>
+            <p>额度按所选模型独立扣减，开始处理后不可切换模型。</p>
             <div className="touch-mode-options">
               {touchModeOptions.map(option=><label key={option.key} className={`touch-mode-card ${collectionTaskDraft.touchMode===option.key?"selected":""}`}>
                 <input type="radio" name="touch-mode" value={option.key} checked={collectionTaskDraft.touchMode===option.key} onChange={()=>setCollectionTaskDraft(old=>({...old,touchMode:option.key}))}/>
-                <span><strong>{option.label}</strong><small>{option.description}</small><em>{option.note}</em></span>
+                <span><strong>{option.label}</strong><small>{option.description}</small>{option.note && <em>{option.note}</em>}</span>
               </label>)}
             </div>
           </fieldset>
           <div className="form-section-title">
             <h3>本次业务信息</h3>
-            <p>{collectionTaskDraft.touchMode === "PRECISION" ? "用于精准判断 A/B/C 与生成上下文话术。" : "用于 A/B/C 上下文话术和 D 类产品话术。"}</p>
+            <p>{collectionTaskDraft.touchMode === "PRECISION" ? "仅处理 A/B/C 意向等级，并生成上下文话术。" : "处理 A/B/C/D 意向等级，其中 D 类使用产品话术。"}</p>
           </div>
           <RuleFields
             value={collectionTaskDraft.rules}
@@ -3140,7 +3143,7 @@ export default function Operations({
                 return;
               setW((old) => ({
                 ...old,
-                quota: reserveQuota(old.quota, replyQuotaGrade as QuotaGrade),
+                quota: reserveQuota(old.quota, replyQuotaModel as QuotaModel),
                 tasks: old.tasks.map((t) =>
                   t.id === reply.task
                     ? {

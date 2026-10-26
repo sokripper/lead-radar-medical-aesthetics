@@ -3,7 +3,7 @@ import { useState } from "react";
 import { StatusPill } from "./WorkspaceUI";
 import {
   type ManagedAccount,
-  type QuotaGrade,
+  type QuotaModel,
   type TenantQuota,
   type ManagedPlatform,
   type ManagedAccountStatus,
@@ -26,15 +26,9 @@ export default function AccountAdmin({ accounts, onChange, quota, onQuotaChange 
   const [editingId, setEditingId] = useState("");
   const [error, setError] = useState("");
   const [filter, setFilter] = useState<"全部" | ManagedPlatform>("全部");
-  const [quotaTotal, setQuotaTotal] = useState<Record<QuotaGrade, string>>({ A: String(quota.A.total), B: String(quota.B.total), C: String(quota.C.total), D: String(quota.D.total) });
-  const quotaGrades: QuotaGrade[] = ["A", "B", "C", "D"];
-  const quotaStatus = quotaGrades.some(grade => quotaRemaining(quota, grade) > 0) ? "额度正常" : "额度不足";
-  const quotaDescriptions:Record<QuotaGrade,string> = {
-    A:"明确合作或近期需求",
-    B:"存在可承接的业务需求",
-    C:"间接机会或弱意向",
-    D:"无明确意向，使用产品话术",
-  };
+  const [quotaTotal, setQuotaTotal] = useState<Record<QuotaModel, string>>({ A: String(quota.A.total), G: String(quota.G.total) });
+  const quotaModels: QuotaModel[] = ["A", "G"];
+  const quotaStatus = quotaModels.some(model => quotaRemaining(quota, model) > 0) ? "额度正常" : "额度不足";
   const primaryChoices = accounts.filter(account => account.platform === draft?.platform && !account.parentId && account.id !== editingId);
   const shown = accounts.filter(account => filter === "全部" || account.platform === filter);
   const open = (account?: ManagedAccount) => {
@@ -58,17 +52,17 @@ export default function AccountAdmin({ accounts, onChange, quota, onQuotaChange 
     <p className="prototype-note">管理权限页面演示 · 原型暂未接入真实权限校验；分配与状态仅保存在当前浏览器。</p>
     <section className="surface quota-overview" aria-label="主体共享触达额度">
       <div className="quota-heading">
-        <div><h2>主体触达额度</h2><p>额度按 A/B/C/D 意向等级分别统计，与精准或批量触达模式无关。每成功发出一条消息，从该用户对应等级的额度池扣 1 次。</p></div>
+        <div><h2>主体触达额度</h2></div>
         <StatusPill status={quotaStatus} />
       </div>
       <div className="quota-buckets">
-        {quotaGrades.map(grade => {
-          const bucket = quota[grade];
-          const remaining = quotaRemaining(quota, grade);
+        {quotaModels.map(model => {
+          const bucket = quota[model];
+          const remaining = quotaRemaining(quota, model);
           const usage = bucket.total ? Math.min(100, Math.round(((bucket.used + bucket.reserved) / bucket.total) * 100)) : 100;
-          const label = `${grade} 类额度`;
-          return <section className={`quota-bucket quota-bucket-${grade.toLowerCase()}`} key={grade}>
-            <header><div><strong>{label}</strong><span>{quotaDescriptions[grade]}</span></div><b>{remaining.toLocaleString()} 可用</b></header>
+          const label = `${model} 类模型额度`;
+          return <section className={`quota-bucket quota-bucket-${model.toLowerCase()}`} key={model}>
+            <header><div><strong>{label}</strong></div><b>{remaining.toLocaleString()} 可用</b></header>
             <div className="quota-metrics">
               <div><span>总额度</span><strong>{bucket.total.toLocaleString()}</strong></div>
               <div><span>已使用</span><strong>{bucket.used.toLocaleString()}</strong></div>
@@ -76,17 +70,16 @@ export default function AccountAdmin({ accounts, onChange, quota, onQuotaChange 
             </div>
             <div className="quota-progress" aria-label={`${label}已使用 ${usage}%`}><i style={{ width: `${usage}%` }} /></div>
             <div className="quota-actions">
-              <label className="field">登记总额度<input type="number" min={bucket.used + bucket.reserved} value={quotaTotal[grade]} onChange={event => setQuotaTotal(old => ({ ...old, [grade]: event.target.value }))} /></label>
+              <label className="field">登记总额度<input type="number" min={bucket.used + bucket.reserved} value={quotaTotal[model]} onChange={event => setQuotaTotal(old => ({ ...old, [model]: event.target.value }))} /></label>
               <button className="button secondary" onClick={() => {
-                const total = Number(quotaTotal[grade]);
+                const total = Number(quotaTotal[model]);
                 if (!Number.isFinite(total) || total < bucket.used + bucket.reserved) return;
-                onQuotaChange({ ...quota, [grade]: { ...bucket, total: Math.floor(total) } });
+                onQuotaChange({ ...quota, [model]: { ...bucket, total: Math.floor(total) } });
               }}>更新额度</button>
             </div>
           </section>;
         })}
       </div>
-      <p className="quota-footnote">某一等级额度不足时，只限制该等级新增发送；移除超额部分后，其他等级仍可继续。精准触达使用 A/B/C，批量触达可使用 A/B/C/D。</p>
     </section>
     <section className="surface admin-accounts">
       <div className="admin-accounts-header"><div><h2>平台账号</h2><p>个人侧只会看到分配给自己的可用账号，不展示登录或云电脑配置。</p></div>

@@ -29,32 +29,28 @@ test('old empty or pre-assignment account records migrate safely', () => {
   assert.equal(old[0].status, '待运维');
 });
 
-test('A B C D quotas are independent and exclude in-flight reservations', () => {
+test('A and G model quotas are independent and exclude in-flight reservations', () => {
   const quota = {
-    A: { total: 5, used: 1, reserved: 1 }, B: { total: 3, used: 2, reserved: 0 },
-    C: { total: 4, used: 1, reserved: 0 }, D: { total: 8, used: 3, reserved: 1 },
+    A: { total: 8, used: 3, reserved: 1 }, G: { total: 5, used: 1, reserved: 1 },
   };
-  assert.equal(quotaRemaining(quota, 'A'), 3);
-  assert.equal(quotaRemaining(quota, 'B'), 1);
-  assert.equal(quotaCanReserve(quota, { A: 3, B: 1, C: 3, D: 4 }), true);
-  assert.equal(quotaCanReserve(quota, { A: 4, B: 0, C: 0, D: 0 }), false);
+  assert.equal(quotaRemaining(quota, 'A'), 4);
+  assert.equal(quotaRemaining(quota, 'G'), 3);
+  assert.equal(quotaCanReserve(quota, { A: 4, G: 3 }), true);
+  assert.equal(quotaCanReserve(quota, { A: 5, G: 0 }), false);
   assert.equal(reserveQuota(quota, 'A').A.reserved, 2);
-  assert.deepEqual(settleQuota(reserveQuota(quota, 'B'), 'B').B, { total: 3, used: 3, reserved: 0 });
+  assert.deepEqual(settleQuota(reserveQuota(quota, 'G'), 'G').G, { total: 5, used: 2, reserved: 1 });
   assert.equal(releaseQuota(reserveQuota(quota, 'A'), 'A').A.reserved, 1);
 });
 
-test('saved grade quotas and older quota shapes restore safely without overdraw', () => {
+test('saved model quotas and older quota shapes restore safely without overdraw', () => {
   assert.deepEqual(restoreQuota(null), demoQuota());
   assert.deepEqual(restoreQuota({
     A: { total: 10, used: 12, reserved: 3 }, B: { total: 6, used: 2, reserved: 8 },
     C: { total: 4, used: 1, reserved: 1 }, D: { total: 7, used: 2, reserved: 2 },
   }), {
-    A: { total: 10, used: 10, reserved: 0 }, B: { total: 6, used: 2, reserved: 4 },
-    C: { total: 4, used: 1, reserved: 1 }, D: { total: 7, used: 2, reserved: 2 },
+    A: { total: 27, used: 17, reserved: 10 }, G: { total: 20, used: 15, reserved: 5 },
   });
   const migrated = restoreQuota({ PRECISION: { total: 10, used: 1, reserved: 2 }, BULK: { total: 6, used: 2, reserved: 1 } });
-  assert.deepEqual(migrated.A, { total: 10, used: 1, reserved: 2 });
-  assert.deepEqual(migrated.B, { total: 6, used: 2, reserved: 1 });
-  assert.deepEqual(migrated.C, demoQuota().C);
-  assert.deepEqual(migrated.D, demoQuota().D);
+  assert.deepEqual(migrated.A, { total: 6, used: 2, reserved: 1 });
+  assert.deepEqual(migrated.G, { total: 10, used: 1, reserved: 2 });
 });
