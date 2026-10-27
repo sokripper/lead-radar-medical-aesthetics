@@ -1,7 +1,7 @@
 import type { Prospect as Lead } from './operations-state';
-export const demoLeads: Lead[] = [
-  { id: 7, name: '提问样本', handle: 'demo_07', grade: '待判断', score: 0, intent: '上下文不足', context: '这个可以吗？', evidence: '缺少所指对象与父评论，无法判断需求', location: '未知', status: '', source: '小红书评论', accountId: '', message: '',businessScene:'待判断',reachability:'暂不触达' },
-  { id: 8, name: '异常样本', handle: 'demo_08', grade: '待判断', score: 0, intent: '内容未读出', context: '', evidence: '该条处理失败，尚未形成分类结果', location: '未知', status: '', source: '小红书评论', accountId: '', message: '' },
+const precisionDemoLeads: Lead[] = [
+  { id: 7, sourceIssue: 'missing_context', name: '提问样本', handle: 'demo_07', grade: '待判断', score: 0, intent: '上下文不足', context: '这个可以吗？', evidence: '缺少所指对象与父评论，无法判断需求', location: '未知', status: '', source: '小红书评论', accountId: '', message: '',businessScene:'待判断',reachability:'暂不触达' },
+  { id: 8, sourceIssue: 'missing_body', name: '异常样本', handle: 'demo_08', grade: '待判断', score: 0, intent: '内容未读出', context: '', evidence: '该条处理失败，尚未形成分类结果', location: '未知', status: '', source: '小红书评论', accountId: '', message: '' },
   { id: 5, name: '晚风散步', handle: 'demo_05', grade: 'C', score: 35, intent: '日常互动', context: '谢谢分享，先收藏啦。', evidence: '仅收藏互动，未表达业务需求', location: '未知', status: '', source: '小红书评论', accountId: '', message: '',businessScene:'泛讨论',reachability:'暂不触达' },
   { id: 6, name: '项目推广示例', handle: 'demo_06', grade: 'D', score: 12, intent: '推广信息', context: '本月活动，接种草合作。', evidence: '达人自荐或纯推广内容，不是品牌方需求', location: '未知', status: '', source: '小红书评论', accountId: '', message: '',businessScene:'推广广告',reachability:'暂不触达' },
   {
@@ -85,3 +85,16 @@ export const demoLeads: Lead[] = [
     businessScene: '招聘运营', reachability: '探索触达',
   },
 ];
+
+export const bulkDemoTaskCode = 'demo-a-model-20261027';
+// Separate record identities keep the A-model demo independent of existing G tasks.
+export const bulkDemoLeads: Lead[] = [
+  ...Array.from({ length: 24 }, (_, index) => {
+    const grade = (['A', 'B', 'C', 'D'] as const)[index % 4];
+    const examples = precisionDemoLeads.filter(lead => lead.grade === grade && !lead.sourceIssue);
+    const example = examples[Math.floor(index / 4) % examples.length];
+    return { ...example, id: 1001 + index, name: `${example.name} · 演示${Math.floor(index / 4) + 1}`, handle: `bulk_demo_${index + 1}`, accountId: `bulk_account_${index + 1}`, sourceTaskCode: bulkDemoTaskCode };
+  }),
+  ...precisionDemoLeads.filter(lead => lead.sourceIssue).map((lead, index) => ({ ...lead, id: 1091 + index, name: `${lead.name} · A模型演示`, handle: `bulk_anomaly_${index + 1}`, sourceTaskCode: bulkDemoTaskCode })),
+];
+export const demoLeads: Lead[] = [...precisionDemoLeads, ...bulkDemoLeads];

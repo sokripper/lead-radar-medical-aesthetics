@@ -88,3 +88,16 @@ export function MetricLine({
     </div>
   );
 }
+
+export function ProgressSteps({ steps, current, complete = false, className = "" }: {
+  steps: string[]; current: number; complete?: boolean; className?: string;
+}) {
+  return <ol className={`progress-steps ${className}`} aria-label="任务进度">
+    {steps.map((label, index) => <li key={label}
+      className={complete || index < current ? "done" : index === current ? "active" : ""}
+      aria-current={!complete && index === current ? "step" : undefined}>
+      <span className="progress-step-number">{index + 1}</span>
+      <span className="progress-step-label">{label}</span>
+    </li>)}
+  </ol>;
+}

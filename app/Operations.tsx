@@ -6,6 +6,7 @@ import {
   MessageBubble,
   Disclosure,
   MetricLine,
+  ProgressSteps,
 } from "./WorkspaceUI";
 import { recipientEvents } from "./presentation";
 import {
@@ -20,7 +21,12 @@ import {
   outreachIssue,
   outreachKey,
   productOpeningCopy,
+  contextualOpeningCopy,
+  contextualCopyVersion,
 } from "./outreach-copy";
+import MessageWorkbench from "./MessageWorkbench";
+import { originalPostUrl } from "./source-data";
+import { bulkDemoTaskCode } from "./demo-data";
 import { RuleSummary, RuleFields } from "./RuleFields";
 import AccountAdmin from "./AccountAdmin";
 import {
@@ -59,6 +65,10 @@ import {
   type AccountStatus,
   type TodoStatus,
   taskStatus,
+  canEditTask,
+  canEditTaskMessage,
+  editTaskMessage,
+  startNextRecipient,
   todoStatus,
   beijingTime,
   toggleId,
@@ -103,6 +113,7 @@ type CollectionTask = {
   batchId?: number;
 };
 type Queue = {
+  sourceBatchId?: number;
   ids: number[];
   blocked: number[];
   included: number[];
@@ -113,11 +124,17 @@ type Queue = {
 type Task = {
   id: number;
   name: string;
+  sourceTaskName?: string;
+  sourceTaskCode?: string;
+  createdAt?: string;
+  startedAt?: string;
   senderAccountId?: string;
   senderAccountName?: string;
   quotaModel: QuotaModel;
   ids: number[];
   texts: Record<number, string>;
+  editedCopyIds?: number[];
+  copyRules?: ScreeningRules;
   results: Record<number, SendStatus>;
   replies: number[];
   followups: Record<number, string>;
@@ -164,12 +181,23 @@ const platform = (l: Prospect): Platform => {
   if (!l.source.includes("小红书")) throw Error("不支持的数据平台");
   return "小红书";
 };
-const initial = (leads: Prospect[]): Workspace => ({
+function withBulkDemo(workspace: Workspace, leads: Prospect[]): Workspace {
+  const sample = leads.filter(lead => lead.sourceTaskCode === bulkDemoTaskCode);
+  if (!sample.length || workspace.collectionTasks.some(task => task.sourceTaskCode === bulkDemoTaskCode)) return workspace;
+  const rules = defaultRules();
+  return { ...workspace,
+    grades: { ...Object.fromEntries(sample.map(lead => [lead.id, lead.grade])), ...workspace.grades },
+    failed: [...new Set([...workspace.failed, ...sample.filter(lead => lead.sourceIssue === "missing_body").map(lead => lead.id)])],
+    collectionTasks: [...workspace.collectionTasks, { id: 10002, name: "A 类模型 · 全量触达演示", sourceTaskCode: bulkDemoTaskCode, platform: "小红书", status: "解析完成", createdAt: "2026/10/27", rules, touchMode: "BULK", batchId: 20002 }],
+    batches: [...workspace.batches, { id: 20002, name: "A 类模型 · 全量触达演示", sourceTaskCode: bulkDemoTaskCode, ids: sample.map(lead => lead.id), time: "2026/10/27", rules, touchMode: "BULK" }],
+  };
+}
+const initial = (leads: Prospect[]): Workspace => withBulkDemo({
   rules: defaultRules(),
   supplements: {},
-  sender: "",
+  sender: "xhs-main",
   dataState: "待处理",
-  schema: 10,
+  schema: 11,
   batches: [],
   batchId: 0,
   collectionTasks: [{
@@ -188,16 +216,20 @@ const initial = (leads: Prospect[]): Workspace => ({
   selected: [],
   queue: emptyQueue(),
   tasks: [],
-  identity: "",
-  attested: false,
-  outreach: emptyOutreachProfile(),
+  identity: "梵行科技运营顾问",
+  attested: true,
+  outreach: {
+    ...emptyOutreachProfile(),
+    project: "小红书代运营／商旅账号运营／账号流量／转化问题／投放效果／账号运营／品牌种草／达人合作／招聘运营／自建团队",
+    experienceConfirmed: true,
+  },
   accounts: { 小红书: "未授权" },
   managedAccounts: demoAccounts(),
   industry: "新媒体运营",
   region: "全国",
   monitor: emptyMonitoring(),
   quota: demoQuota(),
-});
+}, leads);
 const labels = {
   A: "高意向",
   B: "有需求",
@@ -211,6 +243,7 @@ const quotaNeedsOf = (recipients:Prospect[],mode:TouchMode):Record<QuotaModel,nu
   mode === "BULK" ? { A:recipients.length, G:0 } : { A:0, G:recipients.length };
 const sharedTasks = [
   { code: "6b27c68f027e412680393da7b322516e", name: "社媒获客_小红书2", status: "已入库" },
+  { code: bulkDemoTaskCode, name: "A 类模型 · 全量触达演示", status: "已入库" },
 ] as const;
 const taskStatusCopy: Record<CollectionTaskStatus, { title: string; detail: string }> = {
   待配置: {
@@ -293,6 +326,18 @@ function Sheet({
     </dialog>
   );
 }
+function FlowPage({ open, title, subtitle, onClose, footer, children }: {
+  open: boolean; title: string; subtitle?: string; onClose: () => void;
+  footer?: ReactNode; children: ReactNode; wide?: boolean; className?: string;
+}) {
+  if (!open) return null;
+  return <section className="flow-page">
+    <button className="button text" onClick={onClose}>← 返回任务</button>
+    <div className="page-heading"><div><h1>{title}</h1>{subtitle && <p>{subtitle}</p>}</div></div>
+    <div className="surface flow-page-body">{children}</div>
+    {footer && <footer className="flow-page-footer">{footer}</footer>}
+  </section>;
+}
 export default function Operations({
   leads,
   view,
@@ -316,6 +361,9 @@ export default function Operations({
   const [editingCollectionTaskId, setEditingCollectionTaskId] = useState<number | null>(null);
   const [activeCollectionTaskId, setActiveCollectionTaskId] = useState<number | null>(null);
   const [taskWorkspaceTab, setTaskWorkspaceTab] = useState<TaskWorkspaceTab>("overview");
+  const [activeTouchTaskId, setActiveTouchTaskId] = useState<number | null>(null);
+  const [activeHistoryBatchId, setActiveHistoryBatchId] = useState<number | null>(null);
+  const [reviewStep, setReviewStep] = useState<1 | 2>(1);
   const [collectionTaskDraft, setCollectionTaskDraft] = useState(() => ({
     name: "",
     sourceTaskCode: "",
@@ -359,6 +407,14 @@ export default function Operations({
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
   const processingTimer = useRef<number | null>(null);
   const submitting = useRef(false);
+  const [previousView, setPreviousView] = useState(view);
+  if (view !== previousView) {
+    setPreviousView(view);
+    setReview(false);
+    setCreateTaskOpen(false);
+    setActiveTouchTaskId(null);
+    setActiveHistoryBatchId(null);
+  }
   const patch = (x: Partial<Workspace>) => setW((old) => ({ ...old, ...x }));
   useEffect(() => {
     if (!notice) return;
@@ -370,6 +426,7 @@ export default function Operations({
       try {
         const resetRequested = new URLSearchParams(window.location.search).get("reset") === "1";
         if (resetRequested) {
+          localStorage.removeItem("lead-radar-workspace-11");
           localStorage.removeItem("lead-radar-workspace-10");
           localStorage.removeItem("lead-radar-workspace-9");
           localStorage.removeItem("lead-radar-workspace-8");
@@ -380,21 +437,21 @@ export default function Operations({
           localStorage.removeItem("lead-radar-reply-drafts-4");
           window.history.replaceState({}, "", window.location.pathname);
         }
-        const raw = localStorage.getItem("lead-radar-workspace-10") || localStorage.getItem("lead-radar-workspace-9") || localStorage.getItem("lead-radar-workspace-8");
+        const raw = localStorage.getItem("lead-radar-workspace-11") || localStorage.getItem("lead-radar-workspace-10") || localStorage.getItem("lead-radar-workspace-9") || localStorage.getItem("lead-radar-workspace-8");
         if (raw) {
           const x = JSON.parse(raw);
           if (
-            ![8, 9, 10].includes(x.schema) ||
+            ![8, 9, 10, 11].includes(x.schema) ||
             !Array.isArray(x.batches) ||
             !Array.isArray(x.tasks) ||
             !x.queue ||
             !x.grades
           )
             throw Error();
-          setW({
+          setW(withBulkDemo({
             ...initial(leads),
             ...x,
-            schema: 10,
+            schema: 11,
             batches: x.batches.map((batch: Batch) => ({
               ...batch,
               touchMode: batch.touchMode === "BULK" ? "BULK" : "PRECISION",
@@ -424,8 +481,12 @@ export default function Operations({
               region: x.region || "全国",
             }),
             supplements: x.supplements || {},
-            sender: x.schema === 4 && x.sender === "xhs" ? "xhs-main" : x.sender || "",
-            outreach: restoreOutreachProfile(x.outreach),
+            sender: x.schema === 4 && x.sender === "xhs" ? "xhs-main" : x.sender || "xhs-main",
+            identity: x.identity || "梵行科技运营顾问",
+            attested: typeof x.attested === "boolean" ? x.attested : true,
+            outreach: x.outreach?.experienceConfirmed
+              ? restoreOutreachProfile(x.outreach)
+              : initial(leads).outreach,
             dataState: ["处理中"].includes(x.dataState)
               ? "已取消"
               : x.dataState || "待处理",
@@ -447,7 +508,7 @@ export default function Operations({
               notes: t.notes || {},
               monitor: { ...t.monitor, checking: false },
             })),
-          });
+          }, leads));
         }
         const drafts = localStorage.getItem("lead-radar-reply-drafts-4");
         if (drafts) setReplyDrafts(JSON.parse(drafts));
@@ -461,7 +522,7 @@ export default function Operations({
   useEffect(() => {
     if (!loaded) return;
     try {
-      localStorage.setItem("lead-radar-workspace-10", JSON.stringify(w));
+      localStorage.setItem("lead-radar-workspace-11", JSON.stringify(w));
     } catch {
       queueMicrotask(() => setSaveError("本地保存失败，刷新可能丢失编辑。"));
     }
@@ -479,13 +540,15 @@ export default function Operations({
   }, [loaded, replyDrafts]);
   const pool = [...new Set(w.batches.flatMap((b) => b.ids))];
   const activeCollectionTask = w.collectionTasks.find((task) => task.id === activeCollectionTaskId);
-  const current = view === "screening"
+  const current = review && w.queue.sourceBatchId
+    ? w.batches.find((batch) => batch.id === w.queue.sourceBatchId)
+    : view === "screening"
     ? w.batches.find((batch) => batch.id === activeCollectionTask?.batchId)
-    : w.batches.find((batch) => batch.id === w.batchId);
-  const activeTouchMode: TouchMode = activeCollectionTask?.touchMode || current?.touchMode || "PRECISION";
-  const activeRules = activeCollectionTask?.rules || current?.rules || w.rules;
+    : w.batches.find((batch) => batch.id === activeHistoryBatchId);
+  const activeTouchMode: TouchMode = current?.touchMode || (view === "screening" ? activeCollectionTask?.touchMode : undefined) || "PRECISION";
+  const activeRules = current?.rules || (view === "screening" ? activeCollectionTask?.rules : undefined) || w.rules;
   const rows = leads.filter((l) =>
-    (view === "leads" ? pool : current?.ids || []).includes(l.id),
+    (current?.ids || []).includes(l.id),
   );
   const contact = (id: number) =>
     contactStatus(
@@ -495,7 +558,7 @@ export default function Operations({
   const reachability = (lead: Prospect) => reachabilityOf(lead,w.grades[lead.id]);
   const contactableForMode = (lead: Prospect) => {
     const grade = w.grades[lead.id];
-    if (grade === "待判断") return false;
+    if (lead.sourceIssue || grade === "待判断") return false;
     return activeTouchMode === "BULK" ? ["A", "B", "C", "D"].includes(grade) : ["A", "B", "C"].includes(grade);
   };
   const available = (id: number) => {
@@ -506,9 +569,8 @@ export default function Operations({
   const attentionRows = attention.filter(
     (l) =>
       attentionFilter === "ALL" ||
-      (attentionFilter === "FAILED"
-        ? w.failed.includes(l.id)
-        : !w.failed.includes(l.id)),
+      l.sourceIssue === attentionFilter ||
+      (attentionFilter === "OTHER" && !l.sourceIssue),
   );
   const visible = completed.filter(
     (l) =>
@@ -529,18 +591,19 @@ export default function Operations({
   const selected = w.selected.filter(
     (id) => rows.some((l) => l.id === id) && available(id),
   );
+  const taskAudience = rows.filter((lead) => available(lead.id));
   const identityOK = canGenerate("formal", w.identity, w.attested);
   const productCopy = (l: Prospect) => activeTouchMode === "BULK" && w.grades[l.id] === "D";
   const copyKeyFor = (l: Prospect) => productCopy(l)
-    ? JSON.stringify(["PRODUCT", activeRules.revision, activeRules.offering, activeRules.businessNeeds])
-    : JSON.stringify(["CONTEXT", outreachKey(w.outreach)]);
+    ? JSON.stringify(["PRODUCT_CONVERSATION_V2", activeRules.revision, activeRules.offering, activeRules.businessNeeds])
+    : JSON.stringify([contextualCopyVersion, activeRules.revision, activeRules.offering, l.context]);
   function copyIssue(l: Prospect) {
-    const issue = productCopy(l) ? rulesError(activeRules) : outreachIssue(l, w.outreach);
+    const issue = rulesError(activeRules);
     return issue ||
       (w.queue.drafts[l.id] !== undefined && w.queue.copyKeys?.[l.id] !== copyKeyFor(l)
-        ? "话术已更新，请重新生成；原编辑已保留" : "");
+        ? "生成规则已更新，请核对或更新这条话术。" : "");
   }
-  const copyPending = leads.filter(l => w.queue.ids.includes(l.id) && !w.queue.blocked.includes(l.id) && copyIssue(l));
+  const copyPending = leads.filter(l => w.queue.included.includes(l.id) && !w.queue.blocked.includes(l.id) && copyIssue(l));
   const personalAccounts = assignedAccounts(w.managedAccounts);
   const selectedAccount = personalAccounts.find(account => account.id === w.sender);
   const remainingQuota:Record<QuotaModel,number> = {
@@ -575,8 +638,10 @@ export default function Operations({
       ).length,
     0,
   );
+  const activeTouchTask = w.tasks.find((item) => item.id === activeTouchTaskId);
   function message(l: Prospect) {
-    return productCopy(l) ? productOpeningCopy(activeRules, l.id) : openingCopy(l, w.outreach);
+    if (productCopy(l)) return productOpeningCopy(activeRules, l.id);
+    return contextualOpeningCopy(l, activeRules);
   }
   function openCollectionTask(task: CollectionTask) {
     setActiveCollectionTaskId(task.id);
@@ -690,7 +755,7 @@ export default function Operations({
             id,
             name: task.name,
             sourceTaskCode: task.sourceTaskCode,
-            ids: leads.map((l) => l.id),
+            ids: leads.filter(l => (l.sourceTaskCode || "6b27c68f027e412680393da7b322516e") === task.sourceTaskCode).map(l => l.id),
             time: new Date().toLocaleString("zh-CN", {
               timeZone: "Asia/Shanghai",
             }),
@@ -716,32 +781,31 @@ export default function Operations({
     }, 1000);
   }
   function prepare() {
-    if (!selected.length) return;
-    if (!identityOK) {
-      setSettings(true);
-      setNotice("请补充沟通署名，不能编造身份。");
-      return;
-    }
-    const p = prepareDemoRecipients(selected, pool, occupied);
+    if (!current || !taskAudience.length) return;
+    const ids = taskAudience.map((lead) => lead.id);
+    const p = { candidates: ids, matched: ids, blocked: [] as number[] };
     const allocatedAccount = selectedAccount?.status === "正常"
       ? selectedAccount.id
       : personalAccounts.find((account) => account.status === "正常")?.id || "";
     submitting.current = false;
     patch({
       sender: allocatedAccount,
-      queue: mergePreparedQueue(
-        w.queue,
+      queue: { ...mergePreparedQueue(
+        w.queue.sourceBatchId === current.id ? w.queue : emptyQueue(),
         p,
         Object.fromEntries(leads.filter(l => p.matched.includes(l.id)).map(l => [l.id, message(l)])),
         Object.fromEntries(leads.filter(l => p.matched.includes(l.id)).map(l => [l.id, copyKeyFor(l)])),
-      ),
+      ), sourceBatchId: current.id, included: ids },
     });
+    setReviewStep(1);
     setReview(true);
   }
   function send() {
-    if (submitting.current || !ready.length || !readyQuotaAvailable || monitorError(w.monitor)) return;
+    if (submitting.current || !ready.length || ready.length !== w.queue.included.length || !readyQuotaAvailable) return;
     submitting.current = true;
     const ids = ready.map((l) => l.id);
+    const sourceName = current?.name || "筛选任务";
+    const sourceCode = current?.sourceTaskCode || "";
     // eslint-disable-next-line react-hooks/purity -- Timestamp is created only in the explicit send event handler.
     const id = Date.now();
     setW((old) => ({
@@ -750,11 +814,16 @@ export default function Operations({
         ...old.tasks,
         {
           id,
-          name: `触达任务 ${old.tasks.length + 1}`,
+          name: `${sourceName} · 触达批次 ${old.tasks.length + 1}`,
+          sourceTaskName: sourceName,
+          sourceTaskCode: sourceCode,
+          createdAt: new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" }),
           senderAccountId: old.sender,
           senderAccountName: old.managedAccounts.find(account => account.id === old.sender)?.name || "未指定账号",
           quotaModel: activeQuotaModel,
           ids,
+          editedCopyIds: old.queue.edited.filter(id => ids.includes(id)),
+          copyRules: { ...activeRules },
           texts: Object.fromEntries(
             ready.map((l) => [l.id, old.queue.drafts[l.id]]),
           ),
@@ -783,8 +852,9 @@ export default function Operations({
     }));
     setReview(false);
     navigate("workflow");
+    window.setTimeout(() => setActiveTouchTaskId(id), 0);
     setNotice(
-      "提交已受理，消息处于待执行。可通过模拟结果继续测试；未发送真实消息。",
+      `已创建触达任务“${sourceName} · 触达批次 ${w.tasks.length + 1}”，可在任务详情中继续编辑话术并查看执行结果。`,
     );
   }
   function outcome(
@@ -828,7 +898,10 @@ export default function Operations({
         }
         return {
           ...t,
-          [key]: { ...t[key], [id]: next },
+          startedAt: !follow && next === "执行中" ? t.startedAt || new Date().toISOString() : t.startedAt,
+          [key]: !follow && from === "执行中" && ["发送成功", "发送失败"].includes(next) && !t.paused
+            ? startNextRecipient({ ...t[key], [id]: next }, t.ids)
+            : { ...t[key], [id]: next },
           events:
             next === from
               ? t.events
@@ -840,6 +913,28 @@ export default function Operations({
       });
       return { ...old, tasks, quota };
     });
+  }
+  function startTouchTask(task: Task) {
+    if (task.paused || !taskReady(task) || Object.values(task.results).some(status => status === "执行中" || status === "结果待核实")) return;
+    const pendingIds = task.ids.filter((id) => task.results[id] === "待执行");
+    if (!pendingIds.length) return;
+    if (pendingIds.some((id) => !task.texts[id]?.trim())) {
+      setNotice("请先补全名单中的空白话术，再开始触达。");
+      return;
+    }
+    setW((old) => ({
+      ...old,
+      tasks: old.tasks.map((item) => item.id === task.id ? {
+        ...item,
+        startedAt: item.startedAt || new Date().toISOString(),
+        results: startNextRecipient(item.results, item.ids),
+        events: [
+          ...item.events,
+          `${new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })} · 已开始执行 ${pendingIds.length} 条触达`,
+        ],
+      } : item),
+    }));
+    setNotice(`任务已开始触达，共 ${pendingIds.length} 条。`);
   }
   function controls(t: Task, id: number, follow = false) {
     const status = (follow ? t.followResults : t.results)[id];
@@ -1113,8 +1208,8 @@ export default function Operations({
     if (!identityOK) return;
     const lead = leads.find(l => l.id === id);
     if (!lead) return;
-    const error = productCopy(lead) ? rulesError(activeRules) : outreachIssue(lead, w.outreach);
-    if (error) { setNotice(error); setRegenerate(null); openSettings(true); return; }
+    const error = rulesError(activeRules);
+    if (error) { setNotice(error); setRegenerate(null); return; }
     patch({
       queue: {
         ...w.queue,
@@ -1127,6 +1222,14 @@ export default function Operations({
       },
     });
     setRegenerate(null);
+  }
+  function refreshUneditedCopy() {
+    if (!identityOK || rulesError(activeRules)) return;
+    const candidates = leads.filter(l => w.queue.included.includes(l.id) && !w.queue.edited.includes(l.id));
+    patch({ queue: { ...w.queue,
+      drafts: { ...w.queue.drafts, ...Object.fromEntries(candidates.map(l => [l.id, message(l)])) },
+      copyKeys: { ...w.queue.copyKeys, ...Object.fromEntries(candidates.map(l => [l.id, copyKeyFor(l)])) },
+    } });
   }
   function regenerateBatch() {
     if (!identityOK) return;
@@ -1152,17 +1255,6 @@ export default function Operations({
     setNotice(
       "筛选规则已保存，用于之后的分析；已有结果、人工调整和消息保持不变。",
     );
-  }
-  function retryFailed(id: number) {
-    setW((old) => {
-      const failed = old.failed.filter((i) => i !== id);
-      return {
-        ...old,
-        failed,
-        dataState: failed.length ? "部分完成" : "处理完成",
-      };
-    });
-    setNotice("该条已完成模拟重试；信息仍不足时保留待判断，其他结果未重跑。");
   }
   function openMonitor(t: Task) {
     const active =
@@ -1223,6 +1315,7 @@ export default function Operations({
   }
   return (
     <>
+      <div hidden={review || createTaskOpen}>
       <div className="page-heading">
         <div>
           <div className="eyebrow">WORKSPACE</div>
@@ -1230,8 +1323,8 @@ export default function Operations({
             {view === "screening"
               ? activeCollectionTask?.name || "采集任务"
               : view === "leads"
-                ? "历史名单"
-                : "触达与跟进"}
+                ? current?.name || "历史名单"
+                : activeTouchTask?.name || "触达任务"}
           </h1>
           <p>
             {view === "screening"
@@ -1239,44 +1332,13 @@ export default function Operations({
                 ? `羚羊任务 ID：${activeCollectionTask.sourceTaskCode}`
                 : "管理羚羊任务，数据就绪后开始解析。"
               : view === "leads"
-                ? "复用已有名单，查看联系记录。"
-                : "查看发送结果，处理新回复。"}
+                ? current ? "查看本次筛选结果及关联的触达任务。" : "按筛选任务查看已处理名单。"
+                : activeTouchTask
+                  ? `来自${activeTouchTask.sourceTaskName || "筛选任务"} · ${activeTouchTask.quotaModel} 类模型`
+                  : "按任务查看名单、话术、执行账号和发送结果。"}
           </p>
         </div>
-        {view !== "screening" && <button className="button secondary" onClick={() => openSettings()}>
-          <Icon name="settings" size={17} />
-          规则与话术
-        </button>}
       </div>
-      <p className="prototype-note">
-        演示工作区 · 个人侧仅使用已分配账号，数据处理与发送均为模拟，记录仅保存在当前浏览器。
-      </p>
-      {view === "workflow" && (
-        <section className="surface personal-account-picker" aria-label="账号待处理队列">
-          <div>
-            <strong>当前账号队列</strong>
-            <p>切换查看本人各账号的待处理用户；具体分流策略由系统统一执行。</p>
-          </div>
-          <label className="field">
-            查看账号
-            <select
-              aria-label="个人侧选择发送账号"
-              value={selectedAccount ? w.sender : ""}
-              onChange={(event) => patch({ sender: event.target.value })}
-            >
-              <option value="">请选择账号</option>
-              {personalAccounts.map(account => (
-                <option key={account.id} value={account.id} disabled={account.status !== "正常"}>
-                  {account.name}{account.status === "正常" ? "" : ` · ${account.status}`}
-                </option>
-              ))}
-            </select>
-          </label>
-          {!personalAccounts.length && <p className="account-picker-message" role="alert">暂无分配给你的账号，请联系管理员分配。</p>}
-          {quotaModelKeys.every(model=>remainingQuota[model]<=0) && <p className="account-picker-message" role="alert">A/G 模型额度均不足，新的发送已暂停，请联系管理员补充额度。</p>}
-          {quotaModelKeys.some(model=>remainingQuota[model]>0) && <p className="account-picker-message quota-ok">剩余可用额度：{remainingQuotaSummary}</p>}
-        </section>
-      )}
       {saveError && (
         <div className="notice" role="alert">
           {saveError}
@@ -1363,7 +1425,7 @@ export default function Operations({
                 {[
                   ["overview", "任务概览"],
                   ["results", activeCollectionTask.touchMode === "BULK" ? "A 类模型结果" : "G 类模型结果"],
-                  ["attention", `需要处理${attention.length ? `（${attention.length}）` : ""}`],
+                  ["attention", `数据异常${attention.length ? `（${attention.length}）` : ""}`],
                   ["rules", "规则快照"],
                 ].map(([key, label]) => (
                   <button
@@ -1384,12 +1446,9 @@ export default function Operations({
                 <h2>{taskStatusCopy[activeCollectionTask.status].title}</h2>
                 <p>{taskStatusCopy[activeCollectionTask.status].detail}</p>
               </div>
-              <ol className="task-progress-steps">
-                {["同步任务", "选择模型与规则", "处理数据", "处理结果"].map((step, index) => {
-                  const progress = activeCollectionTask.status === "待配置" ? 1 : ["等待数据", "可解析"].includes(activeCollectionTask.status) ? 2 : activeCollectionTask.status === "解析中" ? 3 : 4;
-                  return <li key={step} className={index < progress ? "done" : ""}><span>{index + 1}</span>{step}</li>;
-                })}
-              </ol>
+              <ProgressSteps className="task-progress-steps" steps={["同步任务", "选择模型与规则", "处理数据", "处理结果"]}
+                current={activeCollectionTask.status === "待配置" ? 1 : ["等待数据", "可解析"].includes(activeCollectionTask.status) ? 1 : activeCollectionTask.status === "解析中" ? 2 : 3}
+                complete={activeCollectionTask.status === "解析完成"} />
             </section>
           )}
           {activeCollectionTask && taskWorkspaceTab === "rules" && (
@@ -1404,14 +1463,15 @@ export default function Operations({
           )}
           {activeCollectionTask && taskWorkspaceTab === "attention" && (
             <section className="surface task-attention-overview">
-              <div><h2>需要处理</h2><p>待判断和处理失败记录独立于正常筛选结果，不会清空已选用户和沟通草稿。</p></div>
+              <div><h2>数据异常</h2><p>源数据异常记录不纳入本次触达，可查看异常原因和小红书原文。正常数据继续流转。</p></div>
               {current ? (
                 <>
                   <div className="task-attention-counts">
-                    <div><strong>{attention.filter((lead) => !w.failed.includes(lead.id)).length}</strong><span>待判断</span></div>
-                    <div><strong>{attention.filter((lead) => w.failed.includes(lead.id)).length}</strong><span>处理失败</span></div>
+                    <div><strong>{attention.filter(lead => lead.sourceIssue === "missing_context").length}</strong><span>上下文缺失</span></div>
+                    <div><strong>{attention.filter(lead => lead.sourceIssue === "missing_body").length}</strong><span>正文获取失败</span></div>
+                    {attention.some(lead => !lead.sourceIssue) && <div><strong>{attention.filter(lead => !lead.sourceIssue).length}</strong><span>其他异常</span></div>}
                   </div>
-                  <button className="button primary" disabled={!attention.length} onClick={() => setAttentionOpen(true)}>查看并处理记录</button>
+                  <button className="button secondary" disabled={!attention.length} onClick={() => setAttentionOpen(true)}>查看异常记录</button>
                 </>
               ) : <p className="table-empty">任务尚未产生解析结果。</p>}
             </section>
@@ -1425,7 +1485,32 @@ export default function Operations({
           )}
         </>
       )}
-      {(view === "leads" || (view === "screening" && Boolean(activeCollectionTask) && taskWorkspaceTab === "results")) &&
+      {view === "leads" && !current && <section className="surface touch-task-list-surface">
+        <div className="section-heading"><h2>已处理任务</h2><span className="field-hint">{w.batches.length} 个任务</span></div>
+        {w.batches.length ? <div className="table-wrap"><table className="touch-task-table">
+          <thead><tr><th>筛选任务</th><th>模型</th><th>数据量</th><th>意向分布</th><th>触达任务</th><th>操作</th></tr></thead>
+          <tbody>{w.batches.map(batch => <tr key={batch.id}>
+            <td><strong>{batch.name}</strong><small>{batch.time}</small></td>
+            <td>{quotaModelOf(batch.touchMode)} 类模型</td>
+            <td>{batch.ids.length} 条</td>
+            <td>{["A", "B", "C", "D"].map(grade => `${grade} ${batch.ids.filter(id => w.grades[id] === grade && !w.failed.includes(id)).length}`).join(" / ")}</td>
+            <td>{w.tasks.filter(task => task.sourceTaskCode === batch.sourceTaskCode).length} 个</td>
+            <td><button className="button text" onClick={() => {
+              setActiveHistoryBatchId(batch.id); setFilter("ALL"); setSearch("");
+              setBatchFilter(""); setRegionFilter(""); setContactFilter("");
+              patch({ batchId: batch.id, selected: [] });
+            }}>查看名单</button></td>
+          </tr>)}</tbody>
+        </table></div> : <div className="empty-state"><h3>还没有已处理任务</h3><button className="button primary" onClick={() => navigate("screening")}>去处理数据</button></div>}
+      </section>}
+      {view === "leads" && current && <section className="surface history-task-context">
+        <button className="button text" onClick={() => setActiveHistoryBatchId(null)}>← 返回历史任务</button>
+        <span>{quotaModelOf(current.touchMode)} 类模型 · 任务 ID：{current.sourceTaskCode}</span>
+        {w.tasks.filter(task => task.sourceTaskCode === current.sourceTaskCode).map(task => <button className="button secondary" key={task.id} onClick={() => {
+          navigate("workflow"); window.setTimeout(() => setActiveTouchTaskId(task.id), 0);
+        }}>查看触达批次 {w.tasks.indexOf(task) + 1}</button>)}
+      </section>}
+      {((view === "leads" && Boolean(current)) || (view === "screening" && Boolean(activeCollectionTask) && taskWorkspaceTab === "results")) &&
         (rows.length ? (
           <section className="surface result-surface">
             <div className="section-heading result-heading">
@@ -1446,19 +1531,13 @@ export default function Operations({
             {attention.length > 0 && (
               <div className="attention-strip">
                 <span>
-                  {attention.length} 条需要处理：
-                  {
-                    attention.filter((l) => !w.failed.includes(l.id)).length
-                  }{" "}
-                  条待判断，
-                  {attention.filter((l) => w.failed.includes(l.id)).length}{" "}
-                  条处理失败。可以稍后处理。
+                  {attention.length} 条数据异常，已从触达范围中排除，不影响正常数据。
                 </span>
                 <button
                   className="button secondary"
                   onClick={() => setAttentionOpen(true)}
                 >
-                  需要处理（{attention.length}）
+                  查看异常（{attention.length}）
                 </button>
               </div>
             )}
@@ -1493,141 +1572,30 @@ export default function Operations({
                 }}
               />
             </div>
-            {view === "leads" && (
-              <div className="history-filters">
-                <label>
-                  批次
-                  <select
-                    aria-label="筛选批次"
-                    value={batchFilter}
-                    onChange={(e) => {
-                      setBatchFilter(e.target.value);
-                      patch({ selected: [] });
-                    }}
-                  >
-                    <option value="">全部批次</option>
-                    {w.batches.map((b) => (
-                      <option value={b.id} key={b.id}>
-                        {b.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  地区
-                  <select
-                    aria-label="筛选地区"
-                    value={regionFilter}
-                    onChange={(e) => {
-                      setRegionFilter(e.target.value);
-                      patch({ selected: [] });
-                    }}
-                  >
-                    <option value="">全部地区</option>
-                    {[...new Set(rows.map((l) => l.location))].map((v) => (
-                      <option key={v}>{v}</option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  联系状态
-                  <select
-                    aria-label="筛选联系状态"
-                    value={contactFilter}
-                    onChange={(e) => {
-                      setContactFilter(e.target.value);
-                      patch({ selected: [] });
-                    }}
-                  >
-                    <option value="">全部状态</option>
-                    {[
-                      "未联系",
-                      "待执行",
-                      "已联系",
-                      "发送失败",
-                      "结果待核实",
-                      "已取消",
-                    ].map((v) => (
-                      <option key={v}>{v}</option>
-                    ))}
-                  </select>
-                </label>
-                <button
-                  className="button text"
-                  onClick={() => {
-                    setBatchFilter("");
-                    setRegionFilter("");
-                    setContactFilter("");
-                  }}
-                >
-                  清空条件
-                </button>
-              </div>
-            )}
             <div className="table-wrap">
               <table className="lead-table">
                 <colgroup>
-                  <col className="select-col" />
+                  <col className="record-col" />
                   <col className="user-col" />
                   <col className="grade-col" />
-                  <col className="scene-col" />
                   <col className="need-col" />
                   <col className="region-col" />
                   <col className="action-col" />
                 </colgroup>
                 <thead>
                   <tr>
-                    <th>
-                      <input
-                        aria-label="选择当前可联系用户"
-                        type="checkbox"
-                        checked={
-                          visible.some((l) => available(l.id)) &&
-                          visible
-                            .filter((l) => available(l.id))
-                            .every((l) => w.selected.includes(l.id))
-                        }
-                        onChange={() => {
-                          const ids = visible
-                            .filter((l) => available(l.id))
-                            .map((l) => l.id);
-                          patch({
-                            selected: ids.every((id) => w.selected.includes(id))
-                              ? []
-                              : ids,
-                          });
-                        }}
-                      />
-                    </th>
+                    <th>#</th>
                     <th>用户</th>
                     <th>意向等级</th>
-                    <th>业务场景</th>
-                    <th>需求与依据</th>
+                    <th>业务需求</th>
                     <th>地区</th>
                     <th>操作</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {visible.map((l) => (
-                    <tr
-                      key={l.id}
-                      className={
-                        w.selected.includes(l.id) && available(l.id)
-                          ? "selected"
-                          : ""
-                      }
-                    >
-                      <td>
-                        <input
-                          type="checkbox"
-                          aria-label={`选择 ${l.name}`}
-                          checked={w.selected.includes(l.id) && available(l.id)}
-                          disabled={!available(l.id)}
-                          onChange={() =>
-                            patch({ selected: toggleId(w.selected, l.id) })
-                          }
-                        />
-                      </td>
+                  {visible.map((l, index) => (
+                    <tr key={l.id}>
+                      <td className="record-number">{index + 1}</td>
                       <td>
                         <div className="person">
                           <span className={`avatar tone-${l.id % 4}`}>
@@ -1635,9 +1603,7 @@ export default function Operations({
                           </span>
                           <div>
                             <strong>{l.name}</strong>
-                            <small>
-                              {platform(l)} · {contact(l.id)}
-                            </small>
+                            <small>{l.handle}</small>
                           </div>
                         </div>
                       </td>
@@ -1669,17 +1635,13 @@ export default function Operations({
                         )}
                       </td>
                       <td>
-                        <div className="scene-cell">
-                          <strong>{l.businessScene || "待判断"}</strong>
-                          <span className={`touch-tag touch-${reachability(l)==='优先触达'?'priority':reachability(l)==='建议触达'?'recommended':reachability(l)==='探索触达'?'explore':'hold'}`}>
-                            {activeTouchMode === "BULK" ? "A 类模型" : contactableForMode(l) ? reachability(l) : "不触达"}
-                          </span>
-                          <span className={`copy-type-tag ${productCopy(l) ? "product" : "context"}`}>{productCopy(l) ? "产品话术" : "上下文话术"}</span>
-                        </div>
-                      </td>
-                      <td>
                         <div className="need">
-                          <strong>{l.intent}</strong>
+                          <div className="intent-line">
+                            <strong>{l.businessScene || "待判断"}</strong>
+                            <span className={`touch-tag touch-${reachability(l)==='优先触达'?'priority':reachability(l)==='建议触达'?'recommended':reachability(l)==='探索触达'?'explore':'hold'}`}>
+                              {occupied.includes(l.id) ? "已加入触达" : contactableForMode(l) ? "可触达" : "不触达"}
+                            </span>
+                          </div>
                           <p>{l.context}</p>
                           <small className="row-evidence">
                             {w.adjustments[l.id]?.length
@@ -1693,6 +1655,7 @@ export default function Operations({
                       </td>
                       <td>{l.location}</td>
                       <td>
+                        <div className="lead-row-actions">
                         <button
                           className="button text"
                           onClick={() => setDetail(l.id)}
@@ -1714,6 +1677,7 @@ export default function Operations({
                             查看聊天
                           </button>
                         )}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -1725,22 +1689,19 @@ export default function Operations({
             </div>
             <div className="selection-bar">
               <div>
-                <strong>{selected.length} 位用户已选择</strong>
-                <span className="field-hint">批量话术：{approachLabels[w.outreach.approach]}</span>
-                <button className="button text" onClick={() => openSettings(false)}>设置批量话术</button>
-                <button
-                  className="button text"
-                  onClick={() => patch({ selected: [] })}
-                >
-                  清空
-                </button>
+                <strong>本任务 {taskAudience.length} 位用户可进入新触达任务</strong>
+                <span className="field-hint">按任务范围生成，搜索和列表筛选不影响触达范围</span>
               </div>
+              {current && w.tasks.some(task => task.sourceTaskCode === current.sourceTaskCode) && <button className="button secondary" onClick={() => {
+                const linked = w.tasks.filter(task => task.sourceTaskCode === current.sourceTaskCode).at(-1)!;
+                navigate("workflow"); window.setTimeout(() => setActiveTouchTaskId(linked.id), 0);
+              }}>查看已建触达任务</button>}
               <button
                 className="button primary"
-                disabled={!loaded || !selected.length}
+                disabled={!loaded || !taskAudience.length}
                 onClick={prepare}
               >
-                生成沟通内容
+                下一步：构建触达任务
               </button>
             </div>
           </section>
@@ -1756,336 +1717,115 @@ export default function Operations({
           </section>
         ) : null)}
       {view === "workflow" && (
-        <>
-          <div className="engage-summary">
-            <div>
-              <strong>{w.tasks.length}</strong>
-              <span>触达任务</span>
+        !activeTouchTask ? (
+          <>
+            <div className="engage-summary">
+              <div><strong>{w.tasks.length}</strong><span>触达任务</span></div>
+              <div><strong>{w.tasks.reduce((sum, item) => sum + item.ids.length, 0)}</strong><span>触达用户</span></div>
+              <div><strong>{unread}</strong><span>待跟进回复</span></div>
             </div>
-            <div>
-              <strong>{unread}</strong>
-              <span>待回复</span>
-            </div>
-          </div>
-          {w.queue.ids.length > 0 && (
-            <section className="draft-resume">
-              <strong>沟通草稿已保留</strong>
-              <button
-                className="button primary"
-                onClick={() => {
-                  submitting.current = false;
-                  setReview(true);
-                }}
-              >
-                继续确认
-              </button>
-            </section>
-          )}
-          {!w.tasks.length && (
-            <section className="surface empty-state">
-              <h2>还没有触达任务</h2>
-              <button
-                className="button primary"
-                onClick={() => navigate(pool.length ? "leads" : "screening")}
-              >
-                从名单选人
-              </button>
-            </section>
-          )}
-          {unread > 0 && (
-            <section className="reply-inbox" aria-label="新回复">
-              <h2>
-                新回复 <span className="count">{unread}</span>
-              </h2>
-              {w.tasks.flatMap((t) =>
-                t.replies
-                  .filter(
-                    (id) =>
-                      !["已完成", "已关闭", "已转人工"].includes(
-                        todoStatus(t.followResults[id], t.todos[id]),
-                      ),
-                  )
-                  .map((id) => {
-                    const l = leads.find((l) => l.id === id)!;
-                    return (
-                      <article className="inbox-row" key={t.id + ":" + id}>
-                        <span className={`avatar tone-${id % 4}`}>
-                          {l.name[0]}
-                        </span>
-                        <div>
-                          <strong>{l.name}</strong>
-                          <p>可以，想再了解一下。</p>
-                          <small>{t.name} · 小红书私信</small>
-                        </div>
-                        <StatusPill
-                          status={todoStatus(t.followResults[id], t.todos[id])}
-                        />
-                        <button
-                          className="button primary"
-                          onClick={() => setConvo({ task: t.id, lead: id })}
-                        >
-                          打开聊天
-                        </button>
-                      </article>
-                    );
-                  }),
-              )}
-            </section>
-          )}
-          <div className="task-list">
-            {w.tasks.map((t) => (
-              <section className="surface task-card" key={t.id}>
-                <div className="task-heading">
-                  <div>
-                    <h2>{t.name}</h2>
-                    <p>{t.senderAccountName || "历史账号"} · 小红书私信</p>
-                  </div>
-                  <StatusPill
-                    status={taskStatus(
-                      Object.values(t.results),
-                      t.paused,
-                      !taskReady(t),
-                    )}
-                  />
-                  <details className="task-menu">
-                    <summary aria-label={t.name + "更多操作"}>
-                      更多操作 <Icon name="down" size={14} />
-                    </summary>
-                    <div>
-                      <button
-                        className="button secondary"
-                        onClick={() =>
-                          setW((old) => ({
-                            ...old,
-                            tasks: old.tasks.map((x) =>
-                              x.id === t.id ? { ...x, paused: !x.paused } : x,
-                            ),
-                          }))
-                        }
-                      >
-                        {t.paused ? "恢复任务" : "暂停任务"}
-                      </button>
-                      <button
-                        className="button secondary"
-                        disabled={
-                          !t.ids.some((id) => t.results[id] === "待执行")
-                        }
-                        onClick={() => {
-                          if (
-                            !window.confirm(
-                              "结束首轮任务将取消尚未执行消息，已发出的动作继续归集结果。是否继续？",
-                            )
-                          )
-                            return;
-                          setW((old) => ({
-                            ...old,
-                            tasks: old.tasks.map((x) =>
-                              x.id === t.id
-                                ? {
-                                    ...x,
-                                    results: Object.fromEntries(
-                                      Object.entries(x.results).map(
-                                        ([id, status]) => [
-                                          id,
-                                          status === "待执行"
-                                            ? "已取消"
-                                            : status,
-                                        ],
-                                      ),
-                                    ),
-                                    events: [
-                                      ...x.events,
-                                      "用户结束首轮任务：取消尚未执行消息",
-                                    ],
-                                  }
-                                : x,
-                            ),
-                          }));
-                        }}
-                      >
-                        结束首轮任务
-                      </button>
-                    </div>
-                  </details>
-                </div>
-                <MetricLine
-                  items={[
-                    { label: "用户", value: t.ids.length },
-                    {
-                      label: "待执行",
-                      value: t.ids.filter((id) =>
-                        ["待执行", "执行中"].includes(t.results[id]),
-                      ).length,
-                    },
-                    {
-                      label: "发送成功",
-                      value: t.ids.filter((id) => t.results[id] === "发送成功")
-                        .length,
-                    },
-                    {
-                      label: "失败 / 待核实",
-                      value: t.ids.filter((id) =>
-                        ["发送失败", "结果待核实"].includes(t.results[id]),
-                      ).length,
-                    },
-                  ]}
-                />
-                <div className="monitor-strip">
-                  <div>
-                    <Icon name="clock" size={16} />
-                    <p>
-                      回复检查：
-                      {monitorStatus(
-                        t.monitor,
-                        undefined,
-                        !taskReady(t),
-                      )}
-                      {t.monitor.enabled && ` · ${t.monitor.interval} 分钟`}
-                    </p>
-                    {t.monitor.enabled && (
-                      <small>
-                        截止{" "}
-                        {new Date(
-                          beijingTime(t.monitor.deadline),
-                        ).toLocaleString("zh-CN", {
-                          timeZone: "Asia/Shanghai",
-                        })}
-                        （北京时间）
-                      </small>
-                    )}
-                  </div>
-                  <button
-                    className="button text"
-                    onClick={() => openMonitor(t)}
-                  >
-                    回复检查设置
-                  </button>
-                </div>
-                <div className="task-people">
-                  {t.ids.map((id) => {
-                    const l = leads.find((l) => l.id === id)!;
-                    return (
-                      <details className="task-person" key={id}>
-                        <summary>
-                          <span className={`avatar tone-${id % 4}`}>
-                            {l.name[0]}
-                          </span>
-                          <strong>{l.name}</strong>
-                          <StatusPill status={t.results[id]} />
-                          {t.replies.includes(id) && (
-                            <span className="reply-tag">
-                              {todoStatus(t.followResults[id], t.todos[id])}
-                            </span>
-                          )}
-                          <Icon name="down" size={16} />
-                        </summary>
-                        <div className="task-conversation">
-                          <div className="conversation-preview">
-                            <p>{t.texts[id]}</p>
-                            <button
-                              className="button text"
-                              onClick={() => setConvo({ task: t.id, lead: id })}
-                            >
-                              查看聊天
-                            </button>
-                          </div>
-                          <Disclosure
-                            title="演示首轮发送结果"
-                            className="demo-controls"
-                          >
-                            {controls(t, id)}
-                          </Disclosure>
-                          {t.replies.includes(id) && (
-                            <>
-                              {todoActions(t, id)}
-                              <MessageBubble
-                                incoming
-                                sender={l.name}
-                                text="可以，想再了解一下。"
-                              />
-                              {t.followups[id] ? (
-                                <>
-                                  <MessageBubble
-                                    sender="我方"
-                                    text={t.followups[id]}
-                                    status={t.followResults[id]}
-                                  />
-                                  <p className="followup-summary">
-                                    跟进：{t.followResults[id]}
-                                    {t.followResults[id] !== "发送成功"
-                                      ? " · 待办未完成"
-                                      : " · 已回复"}
-                                  </p>
-                                  <Disclosure
-                                    title="演示跟进发送结果"
-                                    className="demo-controls"
-                                  >
-                                    {controls(t, id, true)}
-                                  </Disclosure>
-                                </>
-                              ) : (
-                                <button
-                                  className="button primary"
-                                  disabled={
-                                    t.paused ||
-                                    ["已关闭", "已转人工"].includes(
-                                      todoStatus(
-                                        t.followResults[id],
-                                        t.todos[id],
-                                      ),
-                                    )
-                                  }
-                                  onClick={() => beginReply(t, id)}
-                                >
-                                  回复这位用户
-                                </button>
-                              )}
-                            </>
-                          )}
-                        </div>
-                      </details>
-                    );
-                  })}
-                </div>
-                <Disclosure title="演示回复检查" className="demo-controls">
-                  <div className="inline-actions">
-                    <button
-                      className="button secondary"
-                      disabled={
-                        t.paused ||
-                        !taskReady(t) ||
-                        monitorStatus(t.monitor) !== "等待检查"
-                      }
-                      onClick={() => checkReply(t, false)}
-                    >
-                      模拟检查无新回复
-                    </button>
-                    <button
-                      className="button secondary"
-                      disabled={
-                        t.paused ||
-                        !taskReady(t) ||
-                        monitorStatus(t.monitor) !== "等待检查" ||
-                        !t.ids.some(
-                          (id) =>
-                            t.results[id] === "发送成功" &&
-                            !t.replies.includes(id),
-                        )
-                      }
-                      onClick={() => checkReply(t)}
-                    >
-                      模拟新回复
-                    </button>
-                  </div>
-                  {t.monitor.lastCheck && (
-                    <p>最近检查：{t.monitor.lastCheck}</p>
-                  )}
-                </Disclosure>
+            {w.queue.ids.length > 0 && w.queue.sourceBatchId && (
+              <section className="draft-resume">
+                <div><strong>有一个待创建的触达任务</strong><p>名单和话术已保留，可继续核对。</p></div>
+                <button className="button primary" onClick={() => { submitting.current = false; setReview(true); }}>继续创建</button>
               </section>
-            ))}
-          </div>
-        </>
+            )}
+            {!w.tasks.length ? (
+              <section className="surface empty-state">
+                <h2>还没有触达任务</h2>
+                <p>请进入筛选任务，基于该任务的可触达名单构建触达任务。</p>
+                <button className="button primary" onClick={() => navigate("screening")}>去查看筛选任务</button>
+              </section>
+            ) : (
+              <section className="surface touch-task-list-surface">
+                <div className="section-heading"><div><h2>触达任务</h2><p>每个任务独立管理名单、话术、账号和执行结果。</p></div></div>
+                <div className="table-wrap">
+                  <table className="touch-task-table">
+                    <thead><tr><th>任务名称</th><th>来源筛选任务</th><th>模型</th><th>名单</th><th>执行账号</th><th>状态</th><th>操作</th></tr></thead>
+                    <tbody>{w.tasks.map((t) => {
+                      const status = taskStatus(Object.values(t.results), t.paused, !taskReady(t));
+                      return <tr key={t.id}>
+                        <td><strong>{t.name}</strong><small>{t.createdAt || "已创建"}</small></td>
+                        <td>{t.sourceTaskName || "历史筛选任务"}</td>
+                        <td><span className={`mode-pill mode-${t.quotaModel === "A" ? "bulk" : "precision"}`}>{t.quotaModel} 类</span></td>
+                        <td>{t.ids.length} 位</td>
+                        <td>{t.senderAccountName || "待分配"}</td>
+                        <td><StatusPill status={status} /></td>
+                        <td><button className="button text" onClick={() => setActiveTouchTaskId(t.id)}>进入任务</button></td>
+                      </tr>;
+                    })}</tbody>
+                  </table>
+                </div>
+              </section>
+            )}
+          </>
+        ) : (
+          <>
+            <section className="surface touch-task-detail-head">
+              <div className="task-workspace-bar">
+                <button className="button text back-to-tasks" onClick={() => setActiveTouchTaskId(null)}>← 返回触达任务列表</button>
+                <div className="inline-actions">
+                  {activeTouchTask.ids.some((id) => activeTouchTask.results[id] === "待执行") && !activeTouchTask.paused && !Object.values(activeTouchTask.results).some(status => status === "执行中" || status === "结果待核实") && (
+                    <button className="button primary" disabled={!taskReady(activeTouchTask) || activeTouchTask.ids.some(id => activeTouchTask.results[id] === "待执行" && !activeTouchTask.texts[id]?.trim())} onClick={() => startTouchTask(activeTouchTask)}>开始触达</button>
+                  )}
+                  {(activeTouchTask.paused || Object.values(activeTouchTask.results).includes("执行中") || (activeTouchTask.startedAt && Object.values(activeTouchTask.results).includes("待执行"))) && (
+                    <button className="button secondary" disabled={activeTouchTask.paused && (!taskReady(activeTouchTask) || activeTouchTask.ids.some(id => activeTouchTask.results[id] === "待执行" && !activeTouchTask.texts[id]?.trim()))}
+                      onClick={() => setW(old => ({ ...old, tasks: old.tasks.map(item => item.id === activeTouchTask.id ? {
+                        ...item, paused: !item.paused,
+                        results: item.paused ? startNextRecipient(item.results, item.ids) : item.results,
+                        events: [...item.events, `${new Date().toLocaleString("zh-CN")} · ${item.paused ? "恢复任务" : "暂停任务"}`],
+                      } : item) }))}>{activeTouchTask.paused ? "恢复任务" : "暂停任务"}</button>
+                  )}
+                </div>
+              </div>
+              {activeTouchTask.ids.every(id => activeTouchTask.results[id] === "待执行") && <ProgressSteps className="flow-steps" steps={["确认触达范围", "话术与账号", "开始触达"]} current={2} />}
+              <label className="field touch-task-name">任务名称
+                <input aria-label="触达任务名称" value={activeTouchTask.name} disabled={!canEditTask(activeTouchTask)}
+                  onChange={event => { const name = event.target.value; setW(old => ({ ...old, tasks: old.tasks.map(item => item.id === activeTouchTask.id && canEditTask(item) ? { ...item, name } : item) })); }} />
+              </label>
+              {activeTouchTask.paused && <p className="task-pause-note">已暂停，可修改任务名称和待执行话术；正在发送的记录等待结果后保留快照。</p>}
+              <div className="touch-task-summary-grid">
+                <div><span>来源筛选任务</span><strong>{activeTouchTask.sourceTaskName || "历史筛选任务"}</strong></div>
+                <div><span>筛选模型</span><strong>{activeTouchTask.quotaModel} 类模型</strong></div>
+                <div><span>执行账号</span><strong>{activeTouchTask.senderAccountName || "待分配"}</strong></div>
+                <div><span>任务状态</span><StatusPill status={taskStatus(Object.values(activeTouchTask.results), activeTouchTask.paused, !taskReady(activeTouchTask))} /></div>
+              </div>
+              <MetricLine items={[
+                { label: "名单", value: activeTouchTask.ids.length },
+                { label: "待执行", value: activeTouchTask.ids.filter((id) => activeTouchTask.results[id] === "待执行").length },
+                { label: "执行中", value: activeTouchTask.ids.filter((id) => activeTouchTask.results[id] === "执行中").length },
+                { label: "发送成功", value: activeTouchTask.ids.filter((id) => activeTouchTask.results[id] === "发送成功").length },
+                { label: "异常", value: activeTouchTask.ids.filter((id) => ["发送失败", "结果待核实"].includes(activeTouchTask.results[id])).length },
+              ]} />
+            </section>
+            <section className="surface touch-recipient-surface">
+              <div className="section-heading"><div><h2>任务名单与话术</h2><p>开始前或暂停后可编辑待执行话术；执行中的任务保持只读。</p></div></div>
+              <MessageWorkbench key={activeTouchTask.id}
+                items={activeTouchTask.ids.map(id => {
+                  const lead = leads.find(item => item.id === id)!;
+                  return { id, name: lead.name, grade: w.grades[id], scene: lead.businessScene, context: lead.context, text: activeTouchTask.texts[id] || "", status: activeTouchTask.results[id], edited: activeTouchTask.editedCopyIds?.includes(id), issue: activeTouchTask.results[id] === "待执行" && !activeTouchTask.texts[id]?.trim() ? "请补全话术" : "" };
+                })}
+                renderEditor={id => {
+                  const lead = leads.find(item => item.id === id)!;
+                  const editable = canEditTaskMessage(activeTouchTask, id);
+                  const sourceRules = activeTouchTask.copyRules || w.batches.find(batch => batch.sourceTaskCode && batch.sourceTaskCode === activeTouchTask.sourceTaskCode)?.rules || w.rules;
+                  const suggestion = w.grades[id] === "D" ? productOpeningCopy(sourceRules, id) : contextualOpeningCopy(lead, sourceRules);
+                  const updateText = (text: string) => setW(old => ({ ...old, tasks: old.tasks.map(item => item.id === activeTouchTask.id ? editTaskMessage(item, id, text) : item) }));
+                  return <>
+                    <section className="message-context"><span>原始内容</span><p>{lead.context}</p><details><summary>查看关联依据</summary><p>{lead.evidence}</p></details></section>
+                    <label className="field">触达话术<textarea aria-label={`${lead.name}的任务话术`} value={activeTouchTask.texts[id] || ""} disabled={!editable} onChange={event => updateText(event.target.value)} /></label>
+                    <div className="message-editor-meta"><span>{editable ? "编辑自动保存" : activeTouchTask.results[id] === "待执行" ? "任务执行中，暂停后可编辑" : "执行时话术快照 · 不可修改"}</span><span>{(activeTouchTask.texts[id] || "").length} 字</span></div>
+                    {editable && <details className="message-suggestion"><summary>查看自然表达建议</summary><p>{suggestion}</p><button className="button secondary" onClick={() => updateText(suggestion)}>采用建议，替换当前话术</button></details>}
+                    <div className="recipient-card-footer"><StatusPill status={activeTouchTask.results[id]} /><button className="button text" onClick={() => setConvo({ task: activeTouchTask.id, lead: id })}>查看会话</button></div>
+                    <Disclosure title="演示执行结果" className="demo-controls">{controls(activeTouchTask, id)}</Disclosure>
+                  </>;
+                }}
+              />
+            </section>
+          </>
+        )
       )}
+      </div>
       <Sheet
         open={settings}
         title="规则与话术"
@@ -2233,110 +1973,53 @@ export default function Operations({
           <p>不编造使用经历、疗效、资质或价格；具体诊疗问题交由专业人员处理。每次发送仍需人工确认。</p>
         </details>
       </Sheet>
-      <Sheet
+      <FlowPage
         open={review}
         wide
-        title="发送前确认"
-        subtitle="核对收件人、账号和正文，确认后提交"
+        title="创建触达任务"
+        subtitle={current?.name || "当前筛选任务"}
         className="review-sheet"
         onClose={() => setReview(false)}
         footer={
           <>
-            <div>
-              <strong>{ready.length} 条可提交</strong>
-              <small>{readyQuotaAvailable ? `提交后预占：${readyQuotaSummary}` : `额度不足：${quotaShortageSummary}`}</small>
-            </div>
+            <button className="button secondary" onClick={() => reviewStep === 1 ? setReview(false) : setReviewStep(1)}>{reviewStep === 1 ? "返回筛选结果" : "上一步：触达范围"}</button>
+            <span>{w.queue.included.length} 位 · {activeQuotaModel} 类模型</span>
             <button
               className="button primary"
-              disabled={!ready.length || !readyQuotaAvailable || Boolean(monitorError(w.monitor))}
-              onClick={send}
+              disabled={reviewStep === 1 ? !w.queue.included.length : !ready.length || ready.length !== w.queue.included.length || !readyQuotaAvailable}
+              onClick={() => reviewStep === 1 ? setReviewStep(2) : send()}
             >
-              确认发送 {ready.length} 条
+              {reviewStep === 1 ? "下一步：话术与账号" : "保存并进入触达任务"}
             </button>
           </>
         }
       >
-        <section className="settings-section">
-          <h3>本批模型：{touchModeLabel(activeTouchMode)}</h3>
-          <p>{activeTouchMode === "BULK" ? "覆盖所有可触达数据；A/B/C 使用上下文话术，D 使用客户产品信息生成话术。" : "仅处理 A/B/C，并结合帖子或评论上下文生成沟通话术。"}</p>
-          <p className="field-hint">上下文话术模板：{w.outreach.greeting}～{w.outreach.experience}。设置变化不会覆盖旧草稿，可确认后统一重新生成。</p>
-          <button className="button secondary" onClick={() => openSettings(true)}>设置批量话术</button>
-          <button className="button text" disabled={!identityOK || !w.queue.included.length} onClick={() => setRegenerate(-1)}>按当前话术重新生成本批</button>
-          {copyPending.length > 0 && <p className="notice">{copyPending.length} 位待补充素材或更新正文，其余用户可继续确认。</p>}
+        <ProgressSteps className="flow-steps" steps={["确认触达范围", "话术与账号", "开始触达"]} current={reviewStep - 1} />
+        {reviewStep === 1 ? <section className="audience-confirm">
+          <h2>按本任务的可触达范围创建</h2>
+          <p>{activeQuotaModel === "G" ? "纳入本任务中的 A、B、C 类用户。" : "纳入本任务中的 A、B、C、D 类用户。"}已加入触达任务的记录不会重复进入。</p>
+          <div className="audience-count"><strong>{w.queue.included.length}</strong><span>位用户将进入本次触达任务</span></div>
+          <div className="audience-breakdown">{["A", "B", "C", "D"].map(grade => <div key={grade}><span>{grade} 类</span><strong>{w.queue.included.filter(id => w.grades[id] === grade).length}</strong></div>)}</div>
+          <p className="field-hint">数据异常 {attention.length} 条 · 已加入触达 {rows.filter(l => occupied.includes(l.id)).length} 条</p>
+          <details className="scope-exceptions"><summary>查看名单 / 排除个别记录</summary>
+            <MessageWorkbench listOnly items={leads.filter(l => w.queue.ids.includes(l.id)).map(l => ({ id: l.id, name: l.name, grade: w.grades[l.id], context: l.context, text: "", status: w.queue.included.includes(l.id) ? "已纳入" : "本次排除" }))}
+              renderEditor={id => <button className="button text" onClick={() => patch({queue:{...w.queue,included:toggleId(w.queue.included,id)}})}>{w.queue.included.includes(id) ? "本次排除" : "恢复纳入"}</button>} />
+          </details>
+        </section> : <>
+        <section className="touch-task-draft-summary">
+          <div><span>来源筛选任务</span><strong>{current?.name || "当前筛选任务"}</strong></div>
+          <div><span>筛选模型</span><strong>{touchModeLabel(activeTouchMode)}</strong></div>
+          <div><span>可创建名单</span><strong>{ready.length} 位</strong></div>
         </section>
-        <section className="settings-section">
-          <h3>系统分配的执行账号</h3>
-          <div className="allocated-account">
-            <strong>{selectedAccount?.name || "暂无可用账号"}</strong>
-            <span>{selectedAccount ? `小红书 · ${selectedAccount.status}` : "请联系管理员检查账号分配"}</span>
-          </div>
-          <p className="field-hint">本批用户已进入当前账号的待发送队列，发送前不能临时改派。</p>
-          {!senderReady && <p role="alert">{personalAccounts.length ? "系统未找到状态正常的已分配账号。" : "暂无分配给你的账号，请联系管理员。"}</p>}
-          {senderReady && !readyQuotaAvailable && <p role="alert">当前模型额度不足（{quotaShortageSummary}），请减少发送数量或联系管理员补充额度。</p>}
-          <h3>后续回复检查</h3>
-          <label className="checkbox-label">
-            <input
-              type="radio"
-              name="monitor"
-              checked={!w.monitor.enabled}
-              onChange={() => patch({ monitor: emptyMonitoring() })}
-            />
-            仅首轮
-          </label>
-          <label className="checkbox-label">
-            <input
-              type="radio"
-              name="monitor"
-              checked={w.monitor.enabled}
-              onChange={() =>
-                patch({ monitor: { ...emptyMonitoring(), enabled: true } })
-              }
-            />
-            启用后续回复检查
-          </label>
-          {w.monitor.enabled && (
-            <>
-              <label className="field">
-                检查间隔
-                <select
-                  aria-label="检查间隔"
-                  value={w.monitor.interval}
-                  onChange={(e) =>
-                    patch({
-                      monitor: { ...w.monitor, interval: e.target.value },
-                    })
-                  }
-                >
-                  <option value="" disabled>
-                    请选择
-                  </option>
-                  <option value="30">30 分钟</option>
-                  <option value="60">60 分钟</option>
-                </select>
-              </label>
-              <label className="field">
-                截止时间
-                <input
-                  aria-label="检查截止时间"
-                  type="datetime-local"
-                  value={w.monitor.deadline}
-                  onChange={(e) =>
-                    patch({
-                      monitor: { ...w.monitor, deadline: e.target.value },
-                    })
-                  }
-                />
-              </label>
-              <p>
-                时间统一按北京时间填写，截止时间须晚于当前时间且不超过启用后 7
-                天。范围为本次任务中模拟发送成功的会话；检查由演示按钮触发，不运行后台轮询。
-              </p>
-              {monitorError(w.monitor) && (
-                <p role="alert">{monitorError(w.monitor)}</p>
-              )}
-            </>
-          )}
-        </section>
+        <div className="draft-account-row"><label className="field">执行账号<select aria-label="触达任务执行账号" value={w.sender} onChange={e=>patch({sender:e.target.value})}><option value="">请选择已分配账号</option>{personalAccounts.map(account=><option key={account.id} value={account.id} disabled={account.status!=="正常"}>{account.name}</option>)}</select></label><p className="field-hint">{activeQuotaModel} 类模型可用 {remainingQuota[activeQuotaModel].toLocaleString()} 次 · 创建时预占 {w.queue.included.length} 次</p></div>
+        <div className="review-batch-tools">
+          <div><strong>话术审核</strong><p>查看重点样本或待处理项，无需逐条翻阅。筛选和翻页不改变任务范围。</p></div>
+          <button className="button secondary" disabled={!identityOK || !w.queue.included.some(id => !w.queue.edited.includes(id))} onClick={refreshUneditedCopy}>更新未编辑话术</button>
+        </div>
+        <details className="message-policy"><summary>自然交流 · 先回应需求，再轻量引导</summary><p>A/B/C 结合原帖、评论与业务资料回应一个具体问题；信息不足先询问，不假定需求。D 仅介绍真实业务，不伪造上下文。不编造体验、客户案例、价格和承诺。当前原型使用场景示例，正式生成需接入模型。</p></details>
+        {!senderReady && <p className="notice" role="alert">{personalAccounts.length ? "系统未找到状态正常的已分配账号。" : "暂无分配给你的账号，请联系管理员。"}</p>}
+        {senderReady && !readyQuotaAvailable && <p className="notice" role="alert">当前模型额度不足（{quotaShortageSummary}），请减少数量或联系管理员。</p>}
+        {copyPending.length > 0 && <p className="notice">{copyPending.length} 位的话术需要更新，请处理后继续。</p>}
         {w.queue.blocked.length > 0 && (
           <p className="notice">
             {w.queue.blocked
@@ -2346,84 +2029,40 @@ export default function Operations({
           </p>
         )}
         {!identityOK && (
-          <p className="notice">
-            缺少真实对外身份，不能生成正式内容。
-            <button className="button text" onClick={() => openSettings(true)}>
-              去设置
-            </button>
-          </p>
+          <section className="notice">
+            <label className="field">补充对外身份<input value={w.identity} onChange={e => patch({ identity: e.target.value, attested: false })} placeholder="实际提供服务的企业或品牌" /></label>
+            <label className="checkbox-label"><input type="checkbox" checked={w.attested} onChange={e => patch({ attested: e.target.checked })} />确认以上信息真实</label>
+          </section>
         )}
-        {leads
-          .filter(
-            (l) =>
-              w.queue.ids.includes(l.id) && !w.queue.blocked.includes(l.id),
-          )
-          .map((l) => (
-            <article className="review-card" key={l.id}>
-              <header>
-                <strong>
-                  {l.name} · {platform(l)} · 私信（演示）
-                </strong>
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    aria-label={`本次发送给 ${l.name}`}
-                    checked={w.queue.included.includes(l.id)}
-                    onChange={() =>
-                      patch({
-                        queue: {
-                          ...w.queue,
-                          included: toggleId(w.queue.included, l.id),
-                        },
-                      })
-                    }
-                  />
-                  本次发送
-                </label>
-              </header>
-              <p>联系依据：{l.evidence}</p>
-              <blockquote>{l.context}</blockquote>
-              {copyIssue(l) && <p className="notice">{copyIssue(l)} <button className="button text" onClick={() => openSettings(true)}>补充话术素材</button></p>}
-              <label className="field">
-                拟发送内容
-                <textarea
-                  aria-label={`${l.name}的拟发送内容`}
-                  value={w.queue.drafts[l.id] || ""}
-                  placeholder="素材齐全后按所选体验推荐话术生成"
-                  onChange={(e) =>
-                    patch({
-                      queue: {
-                        ...w.queue,
-                        drafts: { ...w.queue.drafts, [l.id]: e.target.value },
-                        copyKeys: { ...w.queue.copyKeys, [l.id]: copyIssue(l) ? (w.queue.copyKeys?.[l.id] || "") : copyKeyFor(l) },
-                        edited: [...new Set([...w.queue.edited, l.id])],
-                      },
-                    })
-                  }
-                />
+        <MessageWorkbench key={w.queue.sourceBatchId}
+          items={leads.filter(l => w.queue.included.includes(l.id) && !w.queue.blocked.includes(l.id)).map(l => ({
+            id: l.id, name: l.name, grade: w.grades[l.id], scene: l.businessScene, context: l.context,
+            text: w.queue.drafts[l.id] || "", status: "已生成", edited: w.queue.edited.includes(l.id),
+            issue: copyIssue(l) || (!w.queue.drafts[l.id]?.trim() ? "请补全话术" : ""),
+          }))}
+          renderEditor={id => {
+            const l = leads.find(item => item.id === id)!;
+            return <>
+              <section className="message-context"><span>原始内容</span><p>{l.context}</p><details><summary>查看关联依据</summary><p>{l.evidence}</p></details></section>
+              {copyIssue(l) && <p className="notice">{copyIssue(l)}<button className="button text" onClick={() => patch({ queue: { ...w.queue, copyKeys: { ...w.queue.copyKeys, [id]: copyKeyFor(l) } } })}>保留当前话术并确认</button></p>}
+              <label className="field">触达话术
+                <textarea aria-label={`${l.name}的拟发送内容`} value={w.queue.drafts[id] || ""} placeholder="填写本次沟通内容"
+                  onChange={e => patch({ queue: { ...w.queue, drafts: { ...w.queue.drafts, [id]: e.target.value },
+                    copyKeys: { ...w.queue.copyKeys, [id]: copyIssue(l) ? (w.queue.copyKeys?.[id] || "") : copyKeyFor(l) },
+                    edited: [...new Set([...w.queue.edited, id])] } })} />
               </label>
-              <p className="field-hint">{productCopy(l) ? "产品话术 · 不引用对方上下文" : `${approachLabels[w.outreach.approach]} · 上下文话术`} · 核对正文后确认发送。</p>
-              <div className="review-tools">
-                <span>{selectedAccount ? `小红书 · ${selectedAccount.name}` : "请在上方选择已分配账号"}</span>
-                <button
-                  className="button text"
-                  disabled={!identityOK}
-                  onClick={() =>
-                    w.queue.edited.includes(l.id)
-                      ? setRegenerate(l.id)
-                      : regenerateOne(l.id)
-                  }
-                >
-                  重新生成示例
-                </button>
-              </div>
-            </article>
-          ))}
-      </Sheet>
-      <Sheet
+              <div className="message-editor-meta"><span>{w.queue.edited.includes(id) ? "已编辑 · 自动保存" : "已生成 · 可直接编辑"}</span><span>{(w.queue.drafts[id] || "").length} 字</span></div>
+              {!w.queue.drafts[id]?.trim() && <p className="message-issue">请补全话术后继续。</p>}
+              <details className="message-suggestion"><summary>查看自然表达建议</summary><p>{message(l)}</p><button className="button secondary" onClick={() => regenerateOne(id)}>采用建议，替换当前话术</button></details>
+            </>;
+          }}
+        />
+        </>}
+      </FlowPage>
+      <FlowPage
         open={createTaskOpen}
         wide
-        title="配置采集任务"
+        title="配置模型与业务信息"
         onClose={() => { setCreateTaskOpen(false); setEditingCollectionTaskId(null); }}
         footer={
           <>
@@ -2478,7 +2117,7 @@ export default function Operations({
           />
           {rulesError(collectionTaskDraft.rules) && <p role="alert">{rulesError(collectionTaskDraft.rules)}</p>}
         </div>
-      </Sheet>
+      </FlowPage>
       <Sheet
         open={rulesOpen}
         wide
@@ -2509,7 +2148,7 @@ export default function Operations({
       <Sheet
         open={attentionOpen}
         wide
-        title="需要处理"
+        title="数据异常"
         onClose={() => setAttentionOpen(false)}
         footer={
           <button
@@ -2520,12 +2159,13 @@ export default function Operations({
           </button>
         }
       >
-        <p>这些记录可以稍后处理。已完成名单、已选用户和沟通草稿不会被清空。</p>
+        <p>以下记录未纳入本次触达。可通过原文链接查看来源内容，正常数据不受影响。</p>
         <div className="filter-tabs">
           {[
             ["ALL", "全部异常"],
-            ["PENDING", "待判断"],
-            ["FAILED", "处理失败"],
+            ["missing_context", "上下文缺失"],
+            ["missing_body", "正文获取失败"],
+            ...(attention.some(lead => !lead.sourceIssue) ? [["OTHER", "其他异常"]] : []),
           ].map(([key, label]) => (
             <button
               key={key}
@@ -2536,77 +2176,18 @@ export default function Operations({
             </button>
           ))}
         </div>
-        {attentionRows.map((l) => (
-          <article className="attention-card" key={l.id}>
-            <h3>
-              {l.name}{" "}
-              <span className="subtle-tag">
-                {w.failed.includes(l.id) ? "处理失败" : "待判断"}
-              </span>
-            </h3>
-            <blockquote>{l.context || "正文暂未读取"}</blockquote>
-            <p>
-              {w.failed.includes(l.id)
-                ? "正文读取失败，未形成判断。"
-                : l.evidence}
-            </p>
-            {w.failed.includes(l.id) ? (
-              <button
-                className="button secondary"
-                onClick={() => retryFailed(l.id)}
-              >
-                重试此条（模拟）
-              </button>
-            ) : (
-              <>
-                <label className="field">
-                  补充信息
-                  <textarea
-                    aria-label={`补充 ${l.name} 的信息`}
-                    value={w.supplements[l.id] || ""}
-                    onChange={(e) =>
-                      patch({
-                        supplements: {
-                          ...w.supplements,
-                          [l.id]: e.target.value,
-                        },
-                      })
-                    }
-                  />
-                </label>
-                <p className="field-hint">
-                  补充自动保存，保持待判断；可人工判断，当前原型不自动分析。
-                </p>
-                <label className="field">
-                  人工判断
-                  <select
-                    aria-label={`判断 ${l.name} 的等级`}
-                    value=""
-                    onChange={(e) => {
-                      setAdjusting({
-                        id: l.id,
-                        grade: e.target.value as Prospect["grade"],
-                      });
-                      setReason("");
-                    }}
-                  >
-                    <option value="" disabled>
-                      选择等级，并填写原因
-                    </option>
-                    {Object.entries(labels).map(([g, label]) => (
-                      <option key={g} value={g}>
-                        {g} · {label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </>
-            )}
-            <button className="button text" onClick={() => setDetail(l.id)}>
-              查看依据
-            </button>
-          </article>
-        ))}
+        {attentionRows.map(l => {
+          const url = originalPostUrl(l.sourceUrl);
+          const label = l.sourceIssue === "missing_body" ? "正文获取失败" : l.sourceIssue === "missing_context" ? "上下文缺失" : w.failed.includes(l.id) ? "分析未完成" : "信息不足";
+          return <article className="attention-card source-anomaly-card" key={l.id}>
+            <header><h3>{l.name}</h3><span className="subtle-tag">{label}</span></header>
+            {l.context && <blockquote>{l.context}</blockquote>}
+            <p>{l.sourceIssue === "missing_body" ? "源数据未提供可用正文，未纳入本次触达。" : l.sourceIssue === "missing_context" ? "源数据缺少关联原帖或父评论，无法判断具体需求，未纳入本次触达。" : "当前记录未形成有效判断，未纳入本次触达。"}</p>
+            <footer><span className="field-hint">{l.sourceIssue ? "来源：瓴羊采集数据" : l.source}</span>
+              {url ? <a className="button secondary" href={url} target="_blank" rel="noopener noreferrer">查看小红书原文 ↗</a> : <span className="source-link-missing">未提供原文链接</span>}
+            </footer>
+          </article>;
+        })}
         {!attentionRows.length && (
           <p className="table-empty">当前没有这类记录。</p>
         )}

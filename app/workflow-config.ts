@@ -52,6 +52,6 @@ export function reviseRules(previous:ScreeningRules,draft:ScreeningRules):Screen
   const error=rulesError(draft);if(error)throw Error(error);
   return {...draft,revision:previous.revision+1,grades:{...draft.grades},contactableScenes:[...draft.contactableScenes]};
 }
-export function partitionResults<T extends {id:number}>(rows:T[],grades:Record<number,Prospect['grade']>,failed:number[]){
-  return {completed:rows.filter(x=>!failed.includes(x.id)&&grades[x.id]!=='待判断'),attention:rows.filter(x=>failed.includes(x.id)||grades[x.id]==='待判断')};
+export function partitionResults<T extends {id:number;sourceIssue?:Prospect['sourceIssue']}>(rows:T[],grades:Record<number,Prospect['grade']>,failed:number[]){
+  return {completed:rows.filter(x=>!x.sourceIssue&&!failed.includes(x.id)&&grades[x.id]!=='待判断'),attention:rows.filter(x=>Boolean(x.sourceIssue)||failed.includes(x.id)||grades[x.id]==='待判断')};
 }

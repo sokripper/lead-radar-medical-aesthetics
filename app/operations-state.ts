@@ -2,6 +2,9 @@ export type Prospect = {
   id: number; name: string; handle: string; grade: 'A' | 'B' | 'C' | 'D' | '待判断'; score: number;
   intent: string; context: string; evidence: string; location: string;
   status: string; source: string; accountId: string; message: string;
+  sourceIssue?: 'missing_context' | 'missing_body';
+  sourceUrl?: string;
+  sourceTaskCode?: string;
   businessScene?: '服务合作'|'达人投放'|'招聘运营'|'运营问题'|'泛讨论'|'推广广告'|'待判断';
   reachability?: '优先触达'|'建议触达'|'探索触达'|'暂不触达';
 };
@@ -134,4 +137,21 @@ export function mergePreparedQueue<T extends {ids:number[];blocked:number[];incl
     drafts:{...queue.drafts,...Object.fromEntries(fresh)},
     copyKeys:{...queue.copyKeys,...Object.fromEntries(fresh.map(([id])=>[id,typeof keys==='string'?keys:keys[Number(id)]]))},
   };
+}
+
+type EditableTask = { paused: boolean; startedAt?: string; results: Record<number, SendStatus> };
+export function canEditTask(task: EditableTask) {
+  return task.paused || (!task.startedAt && Object.values(task.results).every(status => status === '待执行'));
+}
+export function canEditTaskMessage(task: EditableTask, id: number) {
+  return canEditTask(task) && task.results[id] === '待执行';
+}
+export function startNextRecipient(results: Record<number, SendStatus>, ids: number[]) {
+  if (Object.values(results).some(status => status === '执行中' || status === '结果待核实')) return results;
+  const next = ids.find(id => results[id] === '待执行');
+  return next === undefined ? results : { ...results, [next]: '执行中' as SendStatus };
+}
+export function editTaskMessage<T extends EditableTask & { texts: Record<number, string>; editedCopyIds?: number[] }>(task: T, id: number, text: string): T {
+  if (!canEditTaskMessage(task, id)) return task;
+  return { ...task, texts: { ...task.texts, [id]: text }, editedCopyIds: [...new Set([...(task.editedCopyIds || []), id])] };
 }

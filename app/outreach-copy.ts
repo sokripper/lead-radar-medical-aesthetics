@@ -116,14 +116,41 @@ export function openingCopy(lead: Context, profile: OutreachProfile) {
 // 原型按用户 id 稳定轮换文案，不伪装成读过对方的帖子或评论。
 export function productOpeningCopy(rules:Pick<ScreeningRules,'offering'|'audience'|'businessNeeds'>,seed:number) {
   const offering=rules.offering.trim();
-  const needs=rules.businessNeeds.split(/[\n；;]/).map(item=>item.trim()).filter(Boolean);
-  const need=needs[seed%needs.length]||rules.businessNeeds.trim();
   const variants=[
-    `哈喽～我们主要提供${offering}。如果你近期有${need}相关需求，我可以把服务介绍发你看看。`,
-    `哈喽～想和你简单介绍一下，我们在做${offering}。如果后续有${need}方面的计划，可以先发一份资料给你参考。`,
-    `哈喽～我们这边专注${offering}。不确定你近期是否有${need}的规划，如果有，我可以把合作方式发你了解。`,
+    `你好，我这边在做${offering}。不确定你近期是否需要，有相关问题可以在这里聊。`,
+    `打扰啦，我做的是${offering}。如果刚好是你在了解的方向，可以先聊聊具体需求。`,
+    `你好，想和你认识一下。我这边做${offering}，有需要时可以聊，不着急。`,
   ];
   return variants[seed%variants.length];
+}
+
+export const contextualCopyVersion = "context-conversation-v2";
+// Prototype examples, not an LLM. Production generation must use the linked post,
+// comment and available parent comment plus verified business facts. Never infer
+// personal experience, customer results, prices or available assets from a keyword.
+export function contextualOpeningCopy(lead: Pick<Prospect, "intent" | "context" | "businessScene">, rules: Pick<ScreeningRules, "industry" | "offering">) {
+  const text = `${lead.intent} ${lead.context}`;
+  const social = /运营|投放|达人|新媒体|小红书|抖音/.test(rules.offering);
+  if (social) {
+    if (lead.businessScene === "泛讨论" || /^(谢谢|感谢|收藏|学习|蹲)/.test(lead.context.trim()))
+      return "你是先了解账号运营，还是也在做自己的账号？如果只是看看也没关系。";
+    if (lead.businessScene === "招聘运营")
+      return "招人和外包可以先按手头的工作拆一拆。现在最缺的是写内容、拍摄，还是统筹整个账号？先把这块理清，选择会容易些。";
+    if (lead.businessScene === "达人投放")
+      return "找达人可以先把想覆盖的人群和内容方向定下来。你这次更想让大家认识产品，还是希望带来咨询？";
+    if (lead.businessScene === "运营问题") {
+      if (/投放|投流|预算/.test(text)) return "先别急着追加预算。你说的效果不理想，主要是咨询量不稳定，还是有人咨询但没往下聊？这两种情况可以分开看。";
+      if (/转化|成交|咨询/.test(text)) return "有流量但没转化，先别急着把内容全推翻。现在主要卡在没人咨询，还是有人问了却没往下聊？这两种情况要分开看。";
+      return "可以先从最卡住的那一步看。你现在主要是内容发出去没人看，还是有人看、互动却不多？";
+    }
+    if (/收费|报价|多少钱|价格/.test(lead.context)) return "费用要看具体做哪些事。你更想了解日常代运营，还是单次投放？先把范围对齐，会更好比较。";
+    if (lead.businessScene === "服务合作") return "可以在这里聊。你是想把账号日常运营交出去，还是先解决内容和获客这块？先说说目前最着急的一件事就好。";
+  }
+  // A short comment may have no usable context. Ask a modest question rather
+  // than restating an unsupported need or inserting an entire product pitch.
+  const topic = lead.intent.split(/[\/／、]/)[0].trim();
+  const subject = topic && !/未知|待判断|上下文|日常互动|泛讨论/.test(topic) ? topic.slice(0, 22) : rules.industry.trim();
+  return `关于${subject}，你现在最想弄清楚哪一块？可以先聊具体情况，再看有没有合适的办法。`;
 }
 
 export function followupCopy(lead: Context | undefined) {
