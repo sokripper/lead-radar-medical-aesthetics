@@ -390,9 +390,7 @@ export default function Operations({
   const [reason, setReason] = useState("");
   const [regenerate, setRegenerate] = useState<number | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
-  const [exportScope, setExportScope] = useState<"selected" | "filtered">(
-    "filtered",
-  );
+  const exportScope = "filtered" as const;
   const [convo, setConvo] = useState<{ task: number; lead: number } | null>(
     null,
   );
@@ -2484,25 +2482,8 @@ export default function Operations({
           </button>
         }
       >
-        <label className="checkbox-label">
-          <input
-            type="radio"
-            name="export"
-            disabled={!w.selected.length}
-            checked={exportScope === "selected"}
-            onChange={() => setExportScope("selected")}
-          />
-          已选用户（{rows.filter((l) => w.selected.includes(l.id)).length}）
-        </label>
-        <label className="checkbox-label">
-          <input
-            type="radio"
-            name="export"
-            checked={exportScope === "filtered"}
-            onChange={() => setExportScope("filtered")}
-          />
-          当前筛选结果（{visible.length}）
-        </label>
+        <p>当前任务：{w.batches.find(batch => batch.id === (activeHistoryBatchId || w.batchId))?.name || "当前任务"}</p>
+        <p>导出范围：当前筛选结果（{visible.length} 位用户）</p>
         <p>导出 CSV，只包含本次范围的虚构用户和业务字段。</p>
       </Sheet>
       <Sheet
