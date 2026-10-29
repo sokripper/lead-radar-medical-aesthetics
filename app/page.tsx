@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Operations from "./Operations";
 import Icon from "./Icon";
 import { demoLeads } from "./demo-data";
@@ -8,6 +8,8 @@ export default function Home() {
   const [view, setView] = useState<"screening" | "leads" | "workflow" | "accounts" | "inbox">(
     "screening",
   );
+  const [trial,setTrial]=useState<boolean|null>(null);
+  useEffect(()=>{const timer=window.setTimeout(()=>setTrial(new URLSearchParams(window.location.search).get('trial') === '1'),0);return ()=>window.clearTimeout(timer);},[]);
   const [help, setHelp] = useState(false);
   const [previewTools,setPreviewTools]=useState(false);
   return (
@@ -83,12 +85,16 @@ export default function Home() {
           <span className="topbar-version">{view === "accounts" ? "管理权限" : view === "inbox" ? "小红书 · 账号私信" : "小红书 · 评论触达"}</span>
         </header>
         <div className="console-content">
+          {trial && <section className="help-strip">
+            <div><strong>从零体验完整流程</strong><p>进入唯一的待配置任务 → 确认模型与业务规则 → 处理数据 → 创建评论任务。发送结果和收到私信可通过“测试操作”模拟，不会真实发送。</p></div>
+            <a className="button secondary" href="?trial=1&restart=1">重新开始体验</a>
+          </section>}
           {help && (
             <section className="help-strip">
               <div>
                 <strong>筛选评论用户，评论触达后跟进私信</strong>
                 <p>当前使用虚构业务数据，不连接真实社交平台。开启测试操作后，可模拟收信和发送结果；关闭后查看正常业务界面。</p>
-                <label className="preview-toggle"><input type="checkbox" checked={previewTools} onChange={e=>setPreviewTools(e.target.checked)}/> 显示测试操作</label>
+                <label className="preview-toggle"><input type="checkbox" checked={trial || previewTools} disabled={!!trial} onChange={e=>setPreviewTools(e.target.checked)}/> 显示测试操作</label>
               </div>
               <button
                 className="icon-button"
@@ -99,7 +105,7 @@ export default function Home() {
               </button>
             </section>
           )}
-          <Operations leads={demoLeads} view={view} navigate={setView} previewTools={previewTools} />
+          {trial !== null && <Operations key={trial ? "trial" : "showcase"} trial={trial} leads={demoLeads} view={view} navigate={setView} previewTools={trial || previewTools} />}
         </div>
       </section>
     </main>

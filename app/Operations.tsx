@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect, useRef, type ReactNode } from "react";
 import Icon from "./Icon";
+import {createTrialWorkspace, trialWorkspaceKey, trialDraftKey} from "./trial-workspace";
 import {
   StatusPill,
   MessageBubble,
@@ -371,13 +372,15 @@ export default function Operations({
   view,
   navigate,
   previewTools = false,
+  trial = false,
 }: {
   leads: Prospect[];
   previewTools?: boolean;
+  trial?: boolean;
   view: View;
   navigate: (v: View) => void;
 }) {
-  const [w, setW] = useState(() => initial(leads));
+  const [w, setW] = useState(() => trial ? createTrialWorkspace(initial(leads),leads) : initial(leads));
   const [loaded, setLoaded] = useState(false);
   const [notice, setNotice] = useState("");
   const [saveError, setSaveError] = useState("");
@@ -449,6 +452,26 @@ export default function Operations({
   useEffect(() => {
     const restore = window.setTimeout(() => {
       try {
+        if (trial) {
+          const params = new URLSearchParams(window.location.search);
+          if (params.get('restart') === '1') {
+            localStorage.removeItem(trialWorkspaceKey);
+            localStorage.removeItem(trialDraftKey);
+            params.delete('restart');
+            window.history.replaceState({}, '', `${window.location.pathname}?${params}`);
+          }
+          const saved = localStorage.getItem(trialWorkspaceKey);
+          if (saved) {
+            const state = JSON.parse(saved) as Workspace;
+            if (state.schema !== 11 || !Array.isArray(state.collectionTasks) || !Array.isArray(state.tasks) || !state.queue) throw Error();
+            // An interrupted local analysis can be started again; never inject showcase tasks here.
+            setW({...state, collectionTasks:state.collectionTasks.map(task=>task.status === '解析中' ? {...task,status:'可解析'} : task)});
+          }
+          const drafts = localStorage.getItem(trialDraftKey);
+          if (drafts) setReplyDrafts(JSON.parse(drafts));
+          setLoaded(true);
+          return;
+        }
         const resetRequested = new URLSearchParams(window.location.search).get("reset") === "1";
         if (resetRequested) {
           localStorage.removeItem("lead-radar-workspace-11");
@@ -546,26 +569,26 @@ export default function Operations({
       setLoaded(true);
     }, 0);
     return () => window.clearTimeout(restore);
-  }, [leads]);
+  }, [leads, trial]);
   useEffect(() => {
     if (!loaded) return;
     try {
-      localStorage.setItem("lead-radar-workspace-11", JSON.stringify(w));
+      localStorage.setItem(trial ? trialWorkspaceKey : "lead-radar-workspace-11", JSON.stringify(w));
     } catch {
       queueMicrotask(() => setSaveError("本地保存失败，刷新可能丢失编辑。"));
     }
-  }, [loaded, w]);
+  }, [loaded, w, trial]);
   useEffect(() => {
     if (!loaded) return;
     try {
       localStorage.setItem(
-        "lead-radar-reply-drafts-4",
+        trial ? trialDraftKey : "lead-radar-reply-drafts-4",
         JSON.stringify(replyDrafts),
       );
     } catch {
       queueMicrotask(() => setSaveError("跟进草稿保存失败，请保留当前编辑。"));
     }
-  }, [loaded, replyDrafts]);
+  }, [loaded, replyDrafts, trial]);
   const activeCollectionTask = w.collectionTasks.find((task) => task.id === activeCollectionTaskId);
   const current = review && w.queue.sourceBatchId
     ? w.batches.find((batch) => batch.id === w.queue.sourceBatchId)
