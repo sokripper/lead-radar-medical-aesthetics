@@ -12,7 +12,8 @@ test('fresh trial contains only one unconfigured task and no previous execution 
  for(const key of ['tasks','batches','inboxMessages','selected','failed']) assert.deepEqual(result[key],[]);
  for(const q of Object.values(result.quota)) {assert.equal(q.used,0);assert.equal(q.reserved,0);assert.ok(q.total>=26);}
  const rows=demoLeads.filter(l=>l.sourceTaskCode===walkthroughTaskCode);
- assert.equal(rows.length,26);
+ assert.equal(rows.length,27);
+ assert.equal(rows.filter(l=>l.recordKind === "post" && !l.commentId).length,1);
  assert.equal(rows.filter(l=>!l.sourceIssue&&commentTarget(l)).length,24);
  assert.equal(base.tasks.length,1);
  assert.notEqual(trialWorkspaceKey,'lead-radar-workspace-11');

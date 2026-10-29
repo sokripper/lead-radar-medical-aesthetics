@@ -87,13 +87,14 @@ export default function Home() {
         <div className="console-content">
           {trial && <section className="help-strip">
             <div><strong>从零体验完整流程</strong><p>进入唯一的待配置任务 → 确认模型与业务规则 → 处理数据 → 创建评论任务。发送结果和收到私信可通过“测试操作”模拟，不会真实发送。</p></div>
-            <a className="button secondary" href="?trial=1&restart=1">重新开始体验</a>
+            <div className="task-workspace-actions"><a className="button secondary" href="?">查看全部状态</a><a className="button secondary" href="?trial=1&restart=1">重新开始体验</a></div>
           </section>}
           {help && (
             <section className="help-strip">
               <div>
-                <strong>筛选评论用户，评论触达后跟进私信</strong>
+                <strong>全部状态总览与完整流程体验</strong>
                 <p>当前使用虚构业务数据，不连接真实社交平台。开启测试操作后，可模拟收信和发送结果；关闭后查看正常业务界面。</p>
+                <a className="button text" href={trial ? "?" : "?trial=1"}>{trial ? "打开全部状态总览" : "打开从零流程体验"}</a>
                 <label className="preview-toggle"><input type="checkbox" checked={trial || previewTools} disabled={!!trial} onChange={e=>setPreviewTools(e.target.checked)}/> 显示测试操作</label>
               </div>
               <button

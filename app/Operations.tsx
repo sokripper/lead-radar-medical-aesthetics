@@ -1,6 +1,7 @@
 "use client";
-import { useState, useEffect, useRef, type ReactNode } from "react";
+import { useState, useEffect, useRef, useMemo, type ReactNode } from "react";
 import Icon from "./Icon";
+import {withPostOnlyPreview, removeObsoletePostSamples} from "./post-only-demo";
 import {createTrialWorkspace, trialWorkspaceKey, trialDraftKey} from "./trial-workspace";
 import {
   StatusPill,
@@ -18,16 +19,17 @@ import {
   openingTemplates,
   approachLabels,
   projectNames,
-  productOpeningCopy,
+  postOpeningCopy,
   contextualOpeningCopy,
   contextualCopyVersion,
 } from "./outreach-copy";
+import {resultPage} from "./result-pagination";
 import MessageWorkbench from "./MessageWorkbench";
 import CommentContext from "./CommentContext";
 import { withPreviewScenarios, presentName } from "./preview-scenarios";
 import AccountInbox from "./AccountInbox";
 import {matchComments, newestMessages, type InboxMessage, type CommentCandidate} from "./account-inbox";
-import { retainedPosts, commentTarget, type CommentTarget } from "./comment-outreach";
+import { commentTarget, postActions, canReply, advanceCommentPlan, type CommentTarget } from "./comment-outreach";
 import { originalPostUrl } from "./source-data";
 import { bulkDemoTaskCode, commentDemoTaskCode, walkthroughTaskCode } from "./demo-data";
 import { RuleSummary, RuleFields } from "./RuleFields";
@@ -70,12 +72,10 @@ import {
   canEditTask,
   canEditTaskMessage,
   editTaskMessage,
-  startNextRecipient,
   todoStatus,
   toggleId,
   emptyMonitoring,
   canGenerate,
-  adjustGrade,
   transitionSend,
   contactStatus,
   exportRows,
@@ -98,7 +98,7 @@ type Batch = {
   touchMode: TouchMode;
 };
 type CollectionTaskStatus = "待配置" | "等待数据" | "可解析" | "解析中" | "解析完成";
-type TaskWorkspaceTab = "overview" | "results" | "attention" | "rules" | "posts";
+type TaskWorkspaceTab = "overview" | "results" | "attention" | "rules";
 type CollectionTask = {
   id: number;
   name: string;
@@ -185,9 +185,10 @@ const platform = (l: Prospect): Platform => {
   return "小红书";
 };
 function withBulkDemo(workspace: Workspace, leads: Prospect[]): Workspace {
-  const base=withBaseDemo(workspace,leads);
+  leads=leads.filter(lead=>lead.targetKind !== "post");
+  const base=withBaseDemo({...workspace,batches:workspace.batches.map(batch=>({...batch,ids:[...new Set([...batch.ids,...leads.filter(l=>l.recordKind === "post" && l.sourceTaskCode === batch.sourceTaskCode).map(l=>l.id)])]}))},leads);
   const named={...base,collectionTasks:base.collectionTasks.map(t=>({...t,name:presentName(t.name)})),batches:base.batches.map(t=>({...t,name:presentName(t.name)})),tasks:base.tasks.map(t=>({...t,name:presentName(t.name),sourceTaskName:presentName(t.sourceTaskName || "")})),inboxMessages:base.inboxMessages.map(m=>({...m,userName:presentName(m.userName)}))};
-  return withPreviewScenarios(named,leads);
+  return removeObsoletePostSamples(withPostOnlyPreview(withPreviewScenarios(named,leads),leads),leads);
 }
 function withBaseDemo(workspace: Workspace, leads: Prospect[]): Workspace {
   const walkthrough=leads.filter(lead=>lead.sourceTaskCode === walkthroughTaskCode);
@@ -213,8 +214,8 @@ function withBaseDemo(workspace: Workspace, leads: Prospect[]): Workspace {
   return { ...workspace,
     grades: { ...Object.fromEntries(sample.map(lead => [lead.id, lead.grade])), ...workspace.grades },
     failed: [...new Set([...workspace.failed, ...sample.filter(lead => lead.sourceIssue === "missing_body").map(lead => lead.id)])],
-    collectionTasks: [...workspace.collectionTasks, { id: 10002, name: "A 类模型 · 全量触达演示", sourceTaskCode: bulkDemoTaskCode, platform: "小红书", status: "解析完成", createdAt: "2026/10/27", rules, touchMode: "BULK", batchId: 20002 }],
-    batches: [...workspace.batches, { id: 20002, name: "A 类模型 · 全量触达演示", sourceTaskCode: bulkDemoTaskCode, ids: sample.map(lead => lead.id), time: "2026/10/27", rules, touchMode: "BULK" }],
+    collectionTasks: [...workspace.collectionTasks, { id: 10002, name: "A 类模型 · 评论触达", sourceTaskCode: bulkDemoTaskCode, platform: "小红书", status: "解析完成", createdAt: "2026/10/27", rules, touchMode: "BULK", batchId: 20002 }],
+    batches: [...workspace.batches, { id: 20002, name: "A 类模型 · 评论触达", sourceTaskCode: bulkDemoTaskCode, ids: sample.map(lead => lead.id), time: "2026/10/27", rules, touchMode: "BULK" }],
   };
 }
 const initial = (leads: Prospect[]): Workspace => withBulkDemo({
@@ -257,13 +258,6 @@ const initial = (leads: Prospect[]): Workspace => withBulkDemo({
   monitor: emptyMonitoring(),
   quota: demoQuota(),
 }, leads);
-const labels = {
-  A: "高意向",
-  B: "有需求",
-  C: "弱意向",
-  D: "无明确意向",
-  待判断: "待判断",
-};
 const quotaModelKeys:QuotaModel[] = ["A", "G"];
 const quotaModelOf = (mode:TouchMode):QuotaModel => mode === "BULK" ? "A" : "G";
 const quotaNeedsOf = (recipients:Prospect[],mode:TouchMode):Record<QuotaModel,number> =>
@@ -272,7 +266,7 @@ const sharedTasks = [
   { code: walkthroughTaskCode, name: "主流程体验 · 从筛选到评论", status: "已入库" },
   { code: "6b27c68f027e412680393da7b322516e", name: "社媒获客_小红书2", status: "已入库" },
   { code: commentDemoTaskCode, name: "评论触达演示 · G 类模型", status: "已入库" },
-  { code: bulkDemoTaskCode, name: "A 类模型 · 全量触达演示", status: "已入库" },
+  { code: bulkDemoTaskCode, name: "A 类模型 · 评论触达", status: "已入库" },
 ] as const;
 const taskStatusCopy: Record<CollectionTaskStatus, { title: string; detail: string }> = {
   待配置: {
@@ -368,7 +362,7 @@ function FlowPage({ open, title, subtitle, onClose, footer, children }: {
   </section>;
 }
 export default function Operations({
-  leads,
+  leads: inputLeads,
   view,
   navigate,
   previewTools = false,
@@ -380,10 +374,15 @@ export default function Operations({
   view: View;
   navigate: (v: View) => void;
 }) {
+  const leads = useMemo(() => [...inputLeads, ...postActions(inputLeads)], [inputLeads]);
   const [w, setW] = useState(() => trial ? createTrialWorkspace(initial(leads),leads) : initial(leads));
   const [loaded, setLoaded] = useState(false);
   const [notice, setNotice] = useState("");
   const [saveError, setSaveError] = useState("");
+  const [resultKind,setResultKind]=useState("ALL");
+  const [resultSize,setResultSize]=useState(10);
+  const [resultPaging,setResultPaging]=useState({key:"",page:1});
+  const [resultJump,setResultJump]=useState("");
   const [filter, setFilter] = useState("CONTACTABLE");
   const [search, setSearch] = useState("");
   const [batchFilter, setBatchFilter] = useState("");
@@ -413,11 +412,6 @@ export default function Operations({
   const [returnReview, setReturnReview] = useState(false);
   const [review, setReview] = useState(false);
   const [detail, setDetail] = useState<number | null>(null);
-  const [adjusting, setAdjusting] = useState<{
-    id: number;
-    grade: Prospect["grade"];
-  } | null>(null);
-  const [reason, setReason] = useState("");
   const [regenerate, setRegenerate] = useState<number | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const exportScope = "filtered" as const;
@@ -465,7 +459,7 @@ export default function Operations({
             const state = JSON.parse(saved) as Workspace;
             if (state.schema !== 11 || !Array.isArray(state.collectionTasks) || !Array.isArray(state.tasks) || !state.queue) throw Error();
             // An interrupted local analysis can be started again; never inject showcase tasks here.
-            setW({...state, collectionTasks:state.collectionTasks.map(task=>task.status === '解析中' ? {...task,status:'可解析'} : task)});
+            setW(removeObsoletePostSamples({...state, batches:state.batches.map(batch=>({...batch,ids:[...new Set([...batch.ids,...inputLeads.filter(l=>l.recordKind === "post" && l.sourceTaskCode === batch.sourceTaskCode).map(l=>l.id)])]})), collectionTasks:state.collectionTasks.map(task=>task.status === '解析中' ? {...task,status:'可解析'} : task)},inputLeads));
           }
           const drafts = localStorage.getItem(trialDraftKey);
           if (drafts) setReplyDrafts(JSON.parse(drafts));
@@ -569,7 +563,7 @@ export default function Operations({
       setLoaded(true);
     }, 0);
     return () => window.clearTimeout(restore);
-  }, [leads, trial]);
+  }, [leads, inputLeads, trial]);
   useEffect(() => {
     if (!loaded) return;
     try {
@@ -598,8 +592,9 @@ export default function Operations({
   const activeTouchMode: TouchMode = current?.touchMode || (view === "screening" ? activeCollectionTask?.touchMode : undefined) || "PRECISION";
   const activeRules = current?.rules || (view === "screening" ? activeCollectionTask?.rules : undefined) || w.rules;
   const rows = leads.filter((l) =>
-    (current?.ids || []).includes(l.id),
+    l.targetKind !== "post" && l.recordKind !== "post" && (current?.ids || []).includes(l.id),
   );
+  const standalonePosts = leads.filter(l=>l.targetKind === "post" && inputLeads.some(raw=>(current?.ids || []).includes(raw.id) && raw.sourceTaskCode === l.sourceTaskCode && raw.sourcePost?.id === l.sourcePost?.id));
   const contact = (id: number) =>
     contactStatus(
       w.tasks.filter((t) => t.ids.includes(id)).map((t) => t.results[id]),
@@ -607,9 +602,8 @@ export default function Operations({
   const occupied = w.tasks.flatMap((t) => t.ids);
   const reachability = (lead: Prospect) => reachabilityOf(lead,w.grades[lead.id]);
   const contactableForMode = (lead: Prospect) => {
-    const grade = w.grades[lead.id];
-    if (lead.sourceIssue || grade === "待判断") return false;
-    return activeTouchMode === "BULK" ? ["A", "B", "C", "D"].includes(grade) : ["A", "B", "C"].includes(grade);
+    if (lead.targetKind === "post") return activeTouchMode === "BULK" && inputLeads.some(row=>(current?.ids || []).includes(row.id) && row.sourcePost?.id === lead.sourcePost?.id && row.sourceTaskCode === lead.sourceTaskCode);
+    return canReply(lead, activeTouchMode, w.grades[lead.id] || lead.grade);
   };
   const available = (id: number) => {
     const lead=leads.find(item=>item.id===id);
@@ -622,15 +616,17 @@ export default function Operations({
       l.sourceIssue === attentionFilter ||
       (attentionFilter === "OTHER" && !l.sourceIssue),
   );
-  const visible = completed.filter(
+  const resultRows = [...completed,...standalonePosts];
+  const visible = resultRows.filter(
     (l) =>
+      (resultKind === "ALL" || (l.targetKind === "post" ? "POST" : "COMMENT") === resultKind) &&
       (filter === "ALL" || filter === "FAILED"
         ? filter === "ALL" || w.failed.includes(l.id)
         : !w.failed.includes(l.id) &&
           (filter === "CONTACTABLE"
             ? contactableForMode(l)
             : w.grades[l.id] === filter)) &&
-      `${l.name}${l.context}${l.intent}${l.location}`.includes(search.trim()) &&
+      `${l.name}${l.context}${l.intent}${l.location}${l.sourcePost?.title || ""}`.includes(search.trim()) &&
       (!batchFilter ||
         w.batches
           .find((b) => b.id === Number(batchFilter))
@@ -638,15 +634,16 @@ export default function Operations({
       (!regionFilter || l.location === regionFilter) &&
       (!contactFilter || contact(l.id) === contactFilter),
   );
+  const resultKey=JSON.stringify([current?.id,resultKind,filter,search,resultSize,batchFilter,regionFilter,contactFilter]);
+  const resultSlice=resultPage(visible,resultPaging.key===resultKey?resultPaging.page:1,resultSize);
+  const goResultPage=(page:number)=>setResultPaging({key:resultKey,page});
   const selected = w.selected.filter(
     (id) => rows.some((l) => l.id === id) && available(id),
   );
-  const taskAudience = rows.filter((lead) => available(lead.id));
+  const taskAudience = [...rows, ...leads.filter(lead=>lead.targetKind === "post" && contactableForMode(lead))]
+    .filter(lead=>available(lead.id)).sort((a,b)=>(a.targetKind === "post" ? 2 : w.grades[a.id] === "D" ? 1 : 0)-(b.targetKind === "post" ? 2 : w.grades[b.id] === "D" ? 1 : 0));
   const identityOK = canGenerate("formal", w.identity, w.attested);
-  const productCopy = (l: Prospect) => activeTouchMode === "BULK" && w.grades[l.id] === "D";
-  const copyKeyFor = (l: Prospect) => productCopy(l)
-    ? JSON.stringify(["COMMENT_PRODUCT_V1", activeRules.revision, activeRules.offering, activeRules.businessNeeds])
-    : JSON.stringify(["COMMENT_V1", contextualCopyVersion, activeRules.revision, activeRules.offering, l.context]);
+  const copyKeyFor = (l: Prospect) => JSON.stringify(["COMMENT_V16", contextualCopyVersion, activeRules.revision, activeRules.offering, l.context, l.targetKind || "comment"]);
   function copyIssue(l: Prospect) {
     const issue = rulesError(activeRules);
     return issue || (!commentTarget(l) ? "缺少主帖或评论定位资料，暂不能创建评论任务。" : "") ||
@@ -675,7 +672,7 @@ export default function Operations({
   const replyTask = w.tasks.find((t) => t.id === reply?.task);
   const replyQuotaModel = reply ? replyTask?.quotaModel || "G" : null;
   const replyQuotaAvailable = Boolean(replyQuotaModel && quotaRemaining(w.quota, replyQuotaModel) > 0);
-  const commentRecords: CommentCandidate[] = w.tasks.filter(t=>t.channel === "comment").flatMap(t=>t.ids.filter(id=>t.results[id] === "发送成功" && t.targets?.[id]).map(id=>({
+  const commentRecords: CommentCandidate[] = w.tasks.filter(t=>t.channel === "comment").flatMap(t=>t.ids.filter(id=>t.results[id] === "发送成功" && t.targets?.[id] && t.targets[id].kind !== "post").map(id=>({
     taskId:t.id,leadId:id,accountId:t.senderAccountId || "",taskName:t.name,target:t.targets![id],lead:leads.find(l=>l.id === id)!,replyText:t.texts[id],
   }))).filter(record=>record.lead);
   const inboxMessages: InboxMessage[] = newestMessages([
@@ -691,7 +688,7 @@ export default function Operations({
   const incomingText=(taskId:number,leadId:number)=>inboxMessages.find(m=>m.id === `legacy-${taskId}-${leadId}`)?.text || "可以，想再了解一下。";
   const activeTouchTask = w.tasks.find((item) => item.id === activeTouchTaskId);
   function message(l: Prospect) {
-    if (productCopy(l)) return productOpeningCopy(activeRules, l.id);
+    if (l.targetKind === "post") return postOpeningCopy(l.sourcePost!, activeRules);
     return contextualOpeningCopy(l, activeRules);
   }
   function openCollectionTask(task: CollectionTask) {
@@ -806,7 +803,7 @@ export default function Operations({
             id,
             name: task.name,
             sourceTaskCode: task.sourceTaskCode,
-            ids: leads.filter(l => (l.sourceTaskCode || "6b27c68f027e412680393da7b322516e") === task.sourceTaskCode).map(l => l.id),
+            ids: leads.filter(l => l.targetKind !== "post" && (l.sourceTaskCode || "6b27c68f027e412680393da7b322516e") === task.sourceTaskCode).map(l => l.id),
             time: new Date().toLocaleString("zh-CN", {
               timeZone: "Asia/Shanghai",
             }),
@@ -854,7 +851,7 @@ export default function Operations({
   function send() {
     if (submitting.current || !ready.length || ready.length !== w.queue.included.length || !readyQuotaAvailable) return;
     submitting.current = true;
-    const ids = ready.map((l) => l.id);
+    const ids = taskAudience.filter(l=>ready.some(item=>item.id===l.id)).map(l=>l.id);
     const sourceName = current?.name || "筛选任务";
     const sourceCode = current?.sourceTaskCode || "";
     // eslint-disable-next-line react-hooks/purity -- Timestamp is created only in the explicit send event handler.
@@ -926,6 +923,10 @@ export default function Operations({
         const quotaModel = t.quotaModel;
         if (follow && ["已关闭", "已转人工"].includes(t.todos[id])) return t;
         const from = t[key][id] || "待执行";
+        if (!follow && from === "待执行" && event !== "cancel" && event !== "retry") {
+          const allowed=advanceCommentPlan(t.results,t.ids).results;
+          if (allowed[id] !== "执行中") return t;
+        }
         if (
           !follow && t.paused &&
           from === "待执行" &&
@@ -950,12 +951,11 @@ export default function Operations({
         } else if (next !== from && ["发送失败", "已取消"].includes(next)) {
           quota = releaseQuota(quota, quotaModel);
         }
+        const plan = !follow ? advanceCommentPlan({...t.results,[id]:next},t.ids,!t.paused && (next === "发送成功" || next === "发送失败" || next === "已取消")) : null;
         return {
           ...t,
           startedAt: !follow && next === "执行中" ? t.startedAt || new Date().toISOString() : t.startedAt,
-          [key]: !follow && from === "执行中" && ["发送成功", "发送失败"].includes(next) && !t.paused
-            ? startNextRecipient({ ...t[key], [id]: next }, t.ids)
-            : { ...t[key], [id]: next },
+          [key]: plan?.results || {...t[key],[id]:next},
           events:
             next === from
               ? t.events
@@ -981,7 +981,7 @@ export default function Operations({
       tasks: old.tasks.map((item) => item.id === task.id ? {
         ...item,
         startedAt: item.startedAt || new Date().toISOString(),
-        results: startNextRecipient(item.results, item.ids),
+        results: advanceCommentPlan(item.results, item.ids).results,
         events: [
           ...item.events,
           `${new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })} · 已开始执行 ${pendingIds.length} 条触达`,
@@ -1207,15 +1207,14 @@ export default function Operations({
   }
 
   function exportList() {
-    const data = exportRows(exportScope, rows, w.selected, visible);
+    const data = exportRows(exportScope, resultRows, w.selected, visible);
     const csv = [
-      ["用户", "平台", "筛选模型", "意向等级", "话术类型", "业务场景", "触达建议", "地区", "评论", "依据", "联系状态"],
+      ["用户", "平台", "筛选模型", "评论类型", "业务场景", "触达建议", "地区", "评论", "依据", "联系状态"],
       ...data.map((l) => [
         l.name,
         platform(l),
         touchModeLabel(activeTouchMode),
-        w.failed.includes(l.id) ? "处理失败" : w.grades[l.id],
-        productCopy(l) ? "产品话术" : "上下文话术",
+        l.targetKind === "post" ? "主帖评论" : "回复用户评论",
         l.businessScene || "待判断",
         reachability(l),
         l.location,
@@ -1421,7 +1420,6 @@ export default function Operations({
                 {[
                   ["overview", "任务概览"],
                   ["results", activeCollectionTask.touchMode === "BULK" ? "A 类模型结果" : "G 类模型结果"],
-                  ["posts", "关联主帖"],
                   ["attention", `数据异常${attention.length ? `（${attention.length}）` : ""}`],
                   ["rules", "规则快照"],
                 ].map(([key, label]) => (
@@ -1448,10 +1446,6 @@ export default function Operations({
                 complete={activeCollectionTask.status === "解析完成"} />
             </section>
           )}
-          {activeCollectionTask && taskWorkspaceTab === "posts" && <section className="surface retained-posts">
-            <div className="section-heading"><div><h2>关联主帖</h2><p>保留主帖内容与发帖人，用于定位评论；主帖不因意向筛选而删除。</p></div></div>
-            {retainedPosts(leads.filter(l => (l.sourceTaskCode || "6b27c68f027e412680393da7b322516e") === activeCollectionTask.sourceTaskCode)).map(post => <article className="retained-post" key={post.id}><span className="field-hint">{post.authorName} · 定位资料</span><h3>{post.title}</h3><p>{post.content}</p><small>关联评论 {leads.filter(l => l.sourcePost?.id === post.id && (l.sourceTaskCode || "6b27c68f027e412680393da7b322516e") === activeCollectionTask.sourceTaskCode).length} 条</small></article>)}
-          </section>}
           {activeCollectionTask && taskWorkspaceTab === "rules" && (
             <section className="surface screening-rules task-rule-snapshot">
               <div className="section-heading">
@@ -1489,12 +1483,12 @@ export default function Operations({
       {view === "leads" && !current && <section className="surface touch-task-list-surface">
         <div className="section-heading"><h2>已处理任务</h2><span className="field-hint">{w.batches.length} 个任务</span></div>
         {w.batches.length ? <div className="table-wrap"><table className="touch-task-table">
-          <thead><tr><th>筛选任务</th><th>模型</th><th>数据量</th><th>意向分布</th><th>触达任务</th><th>操作</th></tr></thead>
+          <thead><tr><th>筛选任务</th><th>模型</th><th>数据量</th><th>有效记录</th><th>触达任务</th><th>操作</th></tr></thead>
           <tbody>{w.batches.map(batch => <tr key={batch.id}>
             <td><strong>{batch.name}</strong><small>{batch.time}</small></td>
             <td>{quotaModelOf(batch.touchMode)} 类模型</td>
             <td>{batch.ids.length} 条</td>
-            <td>{["A", "B", "C", "D"].map(grade => `${grade} ${batch.ids.filter(id => w.grades[id] === grade && !w.failed.includes(id)).length}`).join(" / ")}</td>
+            <td>{batch.ids.filter(id => !w.failed.includes(id) && w.grades[id] !== "待判断").length} 条</td>
             <td>{w.tasks.filter(task => task.sourceTaskCode === batch.sourceTaskCode).length} 个</td>
             <td><button className="button text" onClick={() => {
               setActiveHistoryBatchId(batch.id); setFilter("ALL"); setSearch("");
@@ -1512,14 +1506,14 @@ export default function Operations({
         }}>查看触达批次 {w.tasks.indexOf(task) + 1}</button>)}
       </section>}
       {((view === "leads" && Boolean(current)) || (view === "screening" && Boolean(activeCollectionTask) && taskWorkspaceTab === "results")) &&
-        (rows.length ? (
+        (current?.ids.length ? (
           <section className="surface result-surface">
             <div className="section-heading result-heading">
               <div>
                 <h2>
                   {view === "leads" ? "历史名单" : `${touchModeLabel(activeTouchMode)}结果`}{" "}
                   <span className="count">{visible.length}</span>
-                  {visible.length !== completed.length && <small className="result-total"> / 共 {completed.length}</small>}
+                  {visible.length !== resultRows.length && <small className="result-total"> / 共 {resultRows.length}</small>}
                 </h2>
               </div>
               <button
@@ -1545,11 +1539,7 @@ export default function Operations({
             <div className="result-toolbar">
               <div className="filter-tabs">
                 {[
-                  ...(activeTouchMode === "BULK" ? [["ALL", "全部可触达"]] : [["CONTACTABLE", "可触达 A/B/C"], ["ALL", "全部"]]),
-                  ["A", "A 高意向"],
-                  ["B", "B 有需求"],
-                  ["C", "C 弱意向"],
-                  ["D", activeTouchMode === "BULK" ? "D 产品话术" : "D 不触达"],
+                  ["CONTACTABLE", "可触达"], ["ALL", "全部记录"],
                 ].map(([key, label]) => (
                   <button
                     key={key}
@@ -1563,9 +1553,12 @@ export default function Operations({
                   </button>
                 ))}
               </div>
+              <select aria-label="筛选评论类型" value={resultKind} onChange={e=>setResultKind(e.target.value)}>
+                <option value="ALL">全部类型</option><option value="COMMENT">回复用户评论</option><option value="POST">主帖评论</option>
+              </select>
               <input
                 aria-label="搜索用户"
-                placeholder="搜索用户、需求或地区"
+                placeholder="搜索用户、主帖或内容"
                 value={search}
                 onChange={(e) => {
                   setSearch(e.target.value);
@@ -1578,7 +1571,6 @@ export default function Operations({
                 <colgroup>
                   <col className="record-col" />
                   <col className="user-col" />
-                  <col className="grade-col" />
                   <col className="need-col" />
                   <col className="region-col" />
                   <col className="action-col" />
@@ -1586,72 +1578,37 @@ export default function Operations({
                 <thead>
                   <tr>
                     <th>#</th>
-                    <th>用户</th>
-                    <th>意向等级</th>
-                    <th>业务需求</th>
+                    <th>评论对象</th>
+                    <th>内容与上下文</th>
                     <th>地区</th>
                     <th>操作</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {visible.map((l, index) => (
+                  {resultSlice.rows.map((l, index) => (
                     <tr key={l.id}>
-                      <td className="record-number">{index + 1}</td>
+                      <td className="record-number">{resultSlice.offset + index + 1}</td>
                       <td>
                         <div className="person">
-                          <span className={`avatar tone-${l.id % 4}`}>
+                          <span className={`avatar tone-${Math.abs(l.id) % 4}`}>
                             {l.name[0]}
                           </span>
                           <div>
-                            <strong>{l.name}</strong>
-                            <small>{l.handle}</small>
+                            <strong>{l.targetKind === "post" ? l.sourcePost?.authorName : l.name}</strong>
+                            <small className="comment-kind-tag">{l.targetKind === "post" ? "主帖评论" : "回复用户评论"}</small>
                           </div>
                         </div>
                       </td>
                       <td>
-                        {w.failed.includes(l.id) ? (
-                          <span className="subtle-tag">处理失败</span>
-                        ) : (
-                          <label
-                            className={`grade-choice grade-${w.grades[l.id].toLowerCase()}`}
-                          >
-                            <select
-                              aria-label={`调整 ${l.name} 的等级`}
-                              value={w.grades[l.id]}
-                              onChange={(e) => {
-                                setAdjusting({
-                                  id: l.id,
-                                  grade: e.target.value as Prospect["grade"],
-                                });
-                                setReason("");
-                              }}
-                            >
-                              {Object.entries(labels).map(([g, label]) => (
-                                <option key={g} value={g}>
-                                  {g} · {label}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                        )}
-                      </td>
-                      <td>
                         <div className="need">
                           <div className="intent-line">
-                            <strong>{l.businessScene || "待判断"}</strong>
+                            <strong>{l.sourcePost?.title || l.intent}</strong>
                             <span className={`touch-tag touch-${reachability(l)==='优先触达'?'priority':reachability(l)==='建议触达'?'recommended':reachability(l)==='探索触达'?'explore':'hold'}`}>
                               {occupied.includes(l.id) ? "已加入触达" : contactableForMode(l) ? "可触达" : "不触达"}
                             </span>
                           </div>
-                          <p>{l.context}</p>
-                          <small className="row-evidence">
-                            {w.adjustments[l.id]?.length
-                              ? "人工调整 · 详情可查原因 · "
-                              : ""}
-                            {w.failed.includes(l.id)
-                              ? "正文读取失败，未形成等级"
-                              : l.evidence}
-                          </small>
+                          <p>{l.targetKind === "post" ? "主帖：" : "用户评论："}{l.context}</p>
+                          {l.targetKind !== "post" && l.sourcePost && <small className="result-source-summary">主帖：{l.sourcePost.content}</small>}
                         </div>
                       </td>
                       <td>{l.location}</td>
@@ -1678,12 +1635,20 @@ export default function Operations({
                 </tbody>
               </table>
               {!visible.length && (
-                <p className="table-empty">没有符合条件的用户</p>
+                <p className="table-empty">没有符合条件的记录</p>
               )}
+            </div>
+            <div className="result-pagination">
+              <span>共 {resultSlice.total} 条</span>
+              <select aria-label="结果每页条数" value={resultSize} onChange={e=>setResultSize(Number(e.target.value))}>{[10,20,50].map(n=><option key={n} value={n}>{n} 条/页</option>)}</select>
+              <button className="button secondary" aria-label="上一页结果" disabled={resultSlice.page===1} onClick={()=>goResultPage(resultSlice.page-1)}>上一页</button>
+              <span>{resultSlice.page} / {resultSlice.pages}</span>
+              <button className="button secondary" aria-label="下一页结果" disabled={resultSlice.page===resultSlice.pages} onClick={()=>goResultPage(resultSlice.page+1)}>下一页</button>
+              <form onSubmit={e=>{e.preventDefault();goResultPage(Math.min(resultSlice.pages,Math.max(1,Number(resultJump)||1)));setResultJump("");}}><input aria-label="结果跳转页码" type="number" min={1} max={resultSlice.pages} value={resultJump} placeholder="页码" onChange={e=>setResultJump(e.target.value)}/><button className="button text" type="submit">跳转</button></form>
             </div>
             <div className="selection-bar">
               <div>
-                <strong>本任务 {taskAudience.length} 位用户可进入新触达任务</strong>
+                <strong>本任务最多 {taskAudience.length} 条评论操作可进入新触达任务</strong><span className="field-hint">回复用户评论 {taskAudience.filter(l=>l.targetKind !== "post").length} 条 · 主帖评论候选 {taskAudience.filter(l=>l.targetKind === "post").length} 条</span>
                 <span className="field-hint">按任务范围生成，搜索和列表筛选不影响触达范围</span>
               </div>
               {current && w.tasks.some(task => task.sourceTaskCode === current.sourceTaskCode) && <button className="button secondary" onClick={() => {
@@ -1718,7 +1683,7 @@ export default function Operations({
           <>
             <div className="engage-summary">
               <div><strong>{w.tasks.filter(t=>t.channel === "comment").length}</strong><span>评论任务</span></div>
-              <div><strong>{w.tasks.filter(t=>t.channel === "comment").reduce((sum, item) => sum + item.ids.length, 0)}</strong><span>触达用户</span></div>
+              <div><strong>{w.tasks.filter(t=>t.channel === "comment").reduce((sum, item) => sum + item.ids.length, 0)}</strong><span>评论操作</span></div>
 
             </div>
             {w.queue.ids.length > 0 && w.queue.sourceBatchId && (
@@ -1735,17 +1700,17 @@ export default function Operations({
               </section>
             ) : (
               <section className="surface touch-task-list-surface">
-                <div className="section-heading"><div><h2>评论任务</h2><p>确认名单与话术后，回复主帖下的目标评论。</p></div></div>
+                <div className="section-heading"><div><h2>评论任务</h2><p>查看评论范围、话术与执行进度。</p></div></div>
                 <div className="table-wrap">
                   <table className="touch-task-table">
-                    <thead><tr><th>任务名称</th><th>来源筛选任务</th><th>模型</th><th>名单</th><th>执行账号</th><th>状态</th><th>操作</th></tr></thead>
+                    <thead><tr><th>任务名称</th><th>来源筛选任务</th><th>模型</th><th>评论数量</th><th>执行账号</th><th>状态</th><th>操作</th></tr></thead>
                     <tbody>{w.tasks.filter(t=>t.channel === "comment").map((t) => {
                       const status = taskStatus(Object.values(t.results), t.paused, !taskReady(t));
                       return <tr key={t.id}>
-                        <td><strong>{t.name}</strong><small>{t.channel === "comment" ? "评论回复" : "历史私信"} · {t.createdAt || "已创建"}</small></td>
+                        <td><strong>{t.name}</strong><small>{t.channel === "comment" ? "评论" : "历史私信"} · {t.createdAt || "已创建"}</small></td>
                         <td>{t.sourceTaskName || "历史筛选任务"}</td>
                         <td><span className={`mode-pill mode-${t.quotaModel === "A" ? "bulk" : "precision"}`}>{t.quotaModel} 类</span></td>
-                        <td>{t.ids.length} 位</td>
+                        <td>{t.ids.length} 条</td>
                         <td>{t.senderAccountName || "待分配"}</td>
                         <td><StatusPill status={status} /></td>
                         <td><button className="button text" onClick={() => setActiveTouchTaskId(t.id)}>进入任务</button></td>
@@ -1770,7 +1735,7 @@ export default function Operations({
                     <button className="button secondary" disabled={activeTouchTask.paused && (!taskReady(activeTouchTask) || activeTouchTask.ids.some(id => activeTouchTask.results[id] === "待执行" && !activeTouchTask.texts[id]?.trim()))}
                       onClick={() => setW(old => ({ ...old, tasks: old.tasks.map(item => item.id === activeTouchTask.id ? {
                         ...item, paused: !item.paused,
-                        results: item.paused ? startNextRecipient(item.results, item.ids) : item.results,
+                        results: item.paused ? advanceCommentPlan(item.results, item.ids).results : item.results,
                         events: [...item.events, `${new Date().toLocaleString("zh-CN")} · ${item.paused ? "恢复任务" : "暂停任务"}`],
                       } : item) }))}>{activeTouchTask.paused ? "恢复任务" : "暂停任务"}</button>
                   )}
@@ -1785,11 +1750,11 @@ export default function Operations({
               <div className="touch-task-summary-grid">
                 <div><span>来源筛选任务</span><strong>{activeTouchTask.sourceTaskName || "历史筛选任务"}</strong></div>
                 <div><span>筛选模型</span><strong>{activeTouchTask.quotaModel} 类模型</strong></div>
-                <div><span>执行账号</span><strong>{activeTouchTask.senderAccountName || "待分配"}</strong></div><div><span>触达渠道</span><strong>{activeTouchTask.channel === "comment" ? "评论回复" : "历史私信"}</strong></div>
+                <div><span>执行账号</span><strong>{activeTouchTask.senderAccountName || "待分配"}</strong></div><div><span>触达渠道</span><strong>{activeTouchTask.channel === "comment" ? "评论" : "历史私信"}</strong></div>
                 <div><span>任务状态</span><StatusPill status={taskStatus(Object.values(activeTouchTask.results), activeTouchTask.paused, !taskReady(activeTouchTask))} /></div>
               </div>
               <MetricLine items={[
-                { label: "名单", value: activeTouchTask.ids.length },
+                { label: "候选操作", value: activeTouchTask.ids.length },
                 { label: "待执行", value: activeTouchTask.ids.filter((id) => activeTouchTask.results[id] === "待执行").length },
                 { label: "执行中", value: activeTouchTask.ids.filter((id) => activeTouchTask.results[id] === "执行中").length },
                 { label: "发送成功", value: activeTouchTask.ids.filter((id) => activeTouchTask.results[id] === "发送成功").length },
@@ -1801,17 +1766,17 @@ export default function Operations({
               <MessageWorkbench key={activeTouchTask.id}
                 items={activeTouchTask.ids.map(id => {
                   const lead = leads.find(item => item.id === id)!;
-                  return { id, name: lead.name, grade: w.grades[id], scene: lead.businessScene, context: lead.context, text: activeTouchTask.texts[id] || "", status: activeTouchTask.results[id], edited: activeTouchTask.editedCopyIds?.includes(id), issue: activeTouchTask.results[id] === "待执行" && !activeTouchTask.texts[id]?.trim() ? "请补全话术" : "" };
+                  return { id, name: lead.name, grade: w.grades[id], scene: lead.targetKind === "post" ? "主帖评论" : "回复评论", context: lead.context, text: activeTouchTask.texts[id] || "", status: activeTouchTask.results[id], edited: activeTouchTask.editedCopyIds?.includes(id), issue: activeTouchTask.results[id] === "待执行" && !activeTouchTask.texts[id]?.trim() ? "请补全话术" : "" };
                 })}
                 renderEditor={id => {
                   const lead = leads.find(item => item.id === id)!;
                   const editable = canEditTaskMessage(activeTouchTask, id);
                   const sourceRules = activeTouchTask.copyRules || w.batches.find(batch => batch.sourceTaskCode && batch.sourceTaskCode === activeTouchTask.sourceTaskCode)?.rules || w.rules;
-                  const suggestion = w.grades[id] === "D" ? productOpeningCopy(sourceRules, id) : contextualOpeningCopy(lead, sourceRules);
+                  const suggestion = lead.targetKind === "post" ? postOpeningCopy(lead.sourcePost!, sourceRules) : contextualOpeningCopy(lead, sourceRules);
                   const updateText = (text: string) => setW(old => ({ ...old, tasks: old.tasks.map(item => item.id === activeTouchTask.id ? editTaskMessage(item, id, text) : item) }));
                   return <>
                     {activeTouchTask.channel === "comment" ? <CommentContext lead={lead} snapshot={activeTouchTask.targets?.[id]} /> : <blockquote>{lead.context}</blockquote>}
-                    <label className="field">{activeTouchTask.channel === "comment" ? "我方评论回复" : "历史私信内容"}<textarea aria-label={`${lead.name}的任务话术`} value={activeTouchTask.texts[id] || ""} disabled={!editable} onChange={event => updateText(event.target.value)} /></label>
+                    <label className="field">{activeTouchTask.channel === "comment" ? (lead.targetKind === "post" ? "主帖评论内容" : "我方评论回复") : "历史私信内容"}<textarea aria-label={`${lead.name}的任务话术`} value={activeTouchTask.texts[id] || ""} disabled={!editable} onChange={event => updateText(event.target.value)} /></label>
                     <div className="message-editor-meta"><span>{editable ? "编辑自动保存" : activeTouchTask.results[id] === "待执行" ? "任务执行中，暂停后可编辑" : "执行时话术快照 · 不可修改"}</span><span>{(activeTouchTask.texts[id] || "").length} 字</span></div>
                     {editable && <details className="message-suggestion"><summary>查看自然表达建议</summary><p>{suggestion}</p><button className="button secondary" onClick={() => updateText(suggestion)}>采用建议，替换当前话术</button></details>}
                     <div className="recipient-card-footer"><StatusPill status={activeTouchTask.results[id]} /></div>
@@ -1981,7 +1946,7 @@ export default function Operations({
         footer={
           <>
             <button className="button secondary" onClick={() => reviewStep === 1 ? setReview(false) : setReviewStep(1)}>{reviewStep === 1 ? "返回筛选结果" : "上一步：触达范围"}</button>
-            <span>{w.queue.included.length} 位 · {activeQuotaModel} 类模型</span>
+            <span>{w.queue.included.length} 条 · {activeQuotaModel} 类模型</span>
             <button
               className="button primary"
               disabled={reviewStep === 1 ? !w.queue.included.length : !ready.length || ready.length !== w.queue.included.length || !readyQuotaAvailable}
@@ -1994,30 +1959,30 @@ export default function Operations({
       >
         <ProgressSteps className="flow-steps" steps={["确认触达范围", "话术与账号", "开始评论"]} current={reviewStep - 1} />
         {reviewStep === 1 ? <section className="audience-confirm">
-          <h2>确认需要回复的评论用户</h2><p>在对应主帖下回复用户的原评论。主帖仅作为定位资料保留。</p>
-          <p>{activeQuotaModel === "G" ? "纳入本任务中的 A、B、C 类用户。" : "纳入本任务中的 A、B、C、D 类用户。"}已加入触达任务的记录不会重复进入。</p>
-          <div className="audience-count"><strong>{w.queue.included.length}</strong><span>位用户将进入本次触达任务</span></div>
-          <div className="audience-breakdown">{["A", "B", "C", "D"].map(grade => <div key={grade}><span>{grade} 类</span><strong>{w.queue.included.filter(id => w.grades[id] === grade).length}</strong></div>)}</div>
+          <h2>确认评论范围</h2>
+          <p>{activeQuotaModel === "G" ? "回复与业务相关的用户评论。" : "有用户评论的回复评论；没有对应用户评论的，标记为主帖评论。"}已加入本任务触达批次的记录不会重复进入。</p>
+          <div className="audience-count"><strong>{w.queue.included.length}</strong><span>条评论记录</span></div>
+          <div className="audience-breakdown">{["comment", "post"].map(kind=><div key={kind}><span>{kind === "post" ? "主帖评论" : "回复评论"}</span><strong>{w.queue.included.filter(id=>(leads.find(l=>l.id===id)?.targetKind || "comment") === kind).length}</strong></div>)}</div>
           <p className="field-hint">数据异常 {attention.length} 条 · 已加入触达 {rows.filter(l => occupied.includes(l.id)).length} 条</p>
           <details className="scope-exceptions"><summary>查看名单 / 排除个别记录</summary>
-            <MessageWorkbench listOnly items={leads.filter(l => w.queue.ids.includes(l.id)).map(l => ({ id: l.id, name: l.name, grade: w.grades[l.id], context: l.context, text: "", status: w.queue.included.includes(l.id) ? "已纳入" : "本次排除" }))}
+            <MessageWorkbench listOnly items={leads.filter(l => w.queue.ids.includes(l.id)).map(l => ({ id: l.id, name: l.name, grade: w.grades[l.id], scene:l.targetKind === "post" ? "主帖评论" : "回复评论", context: l.context, text: "", status: w.queue.included.includes(l.id) ? "已纳入" : "本次排除" }))}
               renderEditor={id => <button className="button text" onClick={() => patch({queue:{...w.queue,included:toggleId(w.queue.included,id)}})}>{w.queue.included.includes(id) ? "本次排除" : "恢复纳入"}</button>} />
           </details>
         </section> : <>
         <section className="touch-task-draft-summary">
           <div><span>来源筛选任务</span><strong>{current?.name || "当前筛选任务"}</strong></div>
           <div><span>筛选模型</span><strong>{touchModeLabel(activeTouchMode)}</strong></div>
-          <div><span>可创建名单</span><strong>{ready.length} 位</strong></div>
+          <div><span>可创建名单</span><strong>{ready.length} 条</strong></div>
         </section>
         <div className="draft-account-row"><label className="field">执行账号<select aria-label="触达任务执行账号" value={w.sender} onChange={e=>patch({sender:e.target.value})}><option value="">请选择已分配账号</option>{personalAccounts.map(account=><option key={account.id} value={account.id} disabled={account.status!=="正常"}>{account.name}</option>)}</select></label><p className="field-hint">{activeQuotaModel} 类模型可用 {remainingQuota[activeQuotaModel].toLocaleString()} 次 · 创建时预占 {w.queue.included.length} 次</p></div>
         <div className="review-batch-tools">
           <div><strong>话术审核</strong><p>查看重点样本或待处理项，无需逐条翻阅。筛选和翻页不改变任务范围。</p></div>
           <button className="button secondary" disabled={!identityOK || !w.queue.included.some(id => !w.queue.edited.includes(id))} onClick={refreshUneditedCopy}>更新未编辑话术</button>
         </div>
-        <details className="message-policy"><summary>自然交流 · 先回应需求，再轻量引导</summary><p>A/B/C 结合原帖、评论与业务资料回应一个具体问题；信息不足先询问，不假定需求。D 仅介绍真实业务，不伪造上下文。不编造体验、客户案例、价格和承诺。当前原型使用场景示例，正式生成需接入模型。</p></details>
+        <details className="message-policy"><summary>自然交流 · 先回应需求，再轻量引导</summary><p>结合原帖、评论与已确认业务资料回应一个具体问题；上下文无法判断时跳过。主帖评论围绕主帖主题。不编造体验、客户案例、价格和承诺。当前原型使用场景示例，正式生成需接入模型。</p></details>
         {!senderReady && <p className="notice" role="alert">{personalAccounts.length ? "系统未找到状态正常的已分配账号。" : "暂无分配给你的账号，请联系管理员。"}</p>}
         {senderReady && !readyQuotaAvailable && <p className="notice" role="alert">当前模型额度不足（{quotaShortageSummary}），请减少数量或联系管理员。</p>}
-        {copyPending.length > 0 && <p className="notice">{copyPending.length} 位的话术需要更新，请处理后继续。</p>}
+        {copyPending.length > 0 && <p className="notice">{copyPending.length} 条话术需要更新，请处理后继续。</p>}
         {w.queue.blocked.length > 0 && (
           <p className="notice">
             {w.queue.blocked
@@ -2034,7 +1999,7 @@ export default function Operations({
         )}
         <MessageWorkbench key={w.queue.sourceBatchId}
           items={leads.filter(l => w.queue.included.includes(l.id) && !w.queue.blocked.includes(l.id)).map(l => ({
-            id: l.id, name: l.name, grade: w.grades[l.id], scene: l.businessScene, context: l.context,
+            id: l.id, name: l.name, grade: w.grades[l.id], scene: l.targetKind === "post" ? "主帖评论" : "回复评论", context: l.context,
             text: w.queue.drafts[l.id] || "", status: "已生成", edited: w.queue.edited.includes(l.id),
             issue: copyIssue(l) || (!w.queue.drafts[l.id]?.trim() ? "请补全话术" : ""),
           }))}
@@ -2043,7 +2008,7 @@ export default function Operations({
             return <>
               <CommentContext lead={l} />
               {copyIssue(l) && <p className="notice">{copyIssue(l)}<button className="button text" onClick={() => patch({ queue: { ...w.queue, copyKeys: { ...w.queue.copyKeys, [id]: copyKeyFor(l) } } })}>保留当前话术并确认</button></p>}
-              <label className="field">评论回复内容
+              <label className="field">{l.targetKind === "post" ? "主帖评论内容" : "评论回复内容"}
                 <textarea aria-label={`${l.name}的拟发送内容`} value={w.queue.drafts[id] || ""} placeholder="填写本次沟通内容"
                   onChange={e => patch({ queue: { ...w.queue, drafts: { ...w.queue.drafts, [id]: e.target.value },
                     copyKeys: { ...w.queue.copyKeys, [id]: copyIssue(l) ? (w.queue.copyKeys?.[id] || "") : copyKeyFor(l) },
@@ -2107,7 +2072,7 @@ export default function Operations({
           </fieldset>
           <div className="form-section-title">
             <h3>本次业务信息</h3>
-            <p>{collectionTaskDraft.touchMode === "PRECISION" ? "仅处理 A/B/C 意向等级，并生成上下文话术。" : "处理 A/B/C/D 意向等级，其中 D 类使用产品话术。"}</p>
+            <p>{collectionTaskDraft.touchMode === "PRECISION" ? "优先筛选与业务相关的用户评论，并结合上下文回应。" : "有用户评论的回复评论；没有对应用户评论的，标记为主帖评论。"}</p>
           </div>
           <RuleFields
             value={collectionTaskDraft.rules}
@@ -2139,7 +2104,7 @@ export default function Operations({
           </>
         }
       >
-        <p>填写业务信息即可。系统会自动应用通用分级和排除规则，修改后仅影响之后处理的数据。</p>
+        <p>填写业务信息即可。系统会结合上下文判断可触达范围，修改后仅影响之后处理的数据。</p>
         <RuleFields value={ruleDraft} onChange={setRuleDraft} />
         {rulesError(ruleDraft) && <p role="alert">{rulesError(ruleDraft)}</p>}
       </Sheet>
@@ -2204,128 +2169,14 @@ export default function Operations({
       >
         {detailLead && (
           <>
-            <div className="detail-status">
-              <StatusPill
-                status={
-                  w.failed.includes(detailLead.id)
-                    ? "处理失败"
-                    : w.grades[detailLead.id] +
-                      " " +
-                      labels[w.grades[detailLead.id]]
-                }
-              />
-              <StatusPill status={contact(detailLead.id)} />
-            </div>
-            <section className="detail-section detail-reach">
-              <h3>业务场景与触达建议</h3>
-              <p>
-                <strong>{detailLead.businessScene || "待判断"}</strong>
-                <span className={`touch-tag touch-${reachability(detailLead)==='优先触达'?'priority':reachability(detailLead)==='建议触达'?'recommended':reachability(detailLead)==='探索触达'?'explore':'hold'}`}>{reachability(detailLead)}</span>
-              </p>
-              <small>触达建议与意向等级分开判断，便于保留可承接的间接需求。</small>
-            </section>
-            <section className="detail-section">
-              <h3>为什么推荐这位用户</h3>
-              <p>{detailLead.evidence}</p>
-              <button
-                className="button text"
-                onClick={() => {
-                  setAdjusting({
-                    id: detailLead.id,
-                    grade: w.grades[detailLead.id],
-                  });
-                  setReason("");
-                }}
-              >
-                调整意向等级
-              </button>
-            </section>
+            <div className="detail-status"><StatusPill status={contact(detailLead.id)} /></div>
+            <section className="detail-section"><h3>业务需求</h3><p>{detailLead.intent}</p><p>{detailLead.evidence}</p></section>
             <CommentContext lead={detailLead} />
-            <Disclosure title="人工调整记录">
-              {w.adjustments[detailLead.id]?.length ? (
-                <ol className="audit-list">
-                  {w.adjustments[detailLead.id].map((a, i) => (
-                    <li key={i}>
-                      <strong>
-                        {a.from} → {a.to} · {a.reason}
-                      </strong>
-                      <br />
-                      {a.actor} ·{" "}
-                      {new Date(a.time).toLocaleString("zh-CN", {
-                        timeZone: "Asia/Shanghai",
-                      })}
-                    </li>
-                  ))}
-                </ol>
-              ) : (
-                <p>暂无人工调整</p>
-              )}
-            </Disclosure>
+
           </>
         )}
       </Sheet>
-      <Sheet
-        open={Boolean(adjusting)}
-        title="调整意向等级"
-        className="compact-sheet"
-        onClose={() => setAdjusting(null)}
-        footer={
-          <button
-            className="button primary"
-            disabled={!reason.trim()}
-            onClick={() => {
-              if (!adjusting) return;
-              const a = adjustGrade(
-                w.grades[adjusting.id],
-                adjusting.grade,
-                reason,
-              );
-              patch({
-                grades: { ...w.grades, [adjusting.id]: adjusting.grade },
-                adjustments: {
-                  ...w.adjustments,
-                  [adjusting.id]: [...(w.adjustments[adjusting.id] || []), a],
-                },
-                selected: w.selected.filter((id) => id !== adjusting.id),
-              });
-              setAdjusting(null);
-            }}
-          >
-            保存调整
-          </button>
-        }
-      >
-        <label className="field">
-          调整为
-          <select
-            aria-label="调整后的意向等级"
-            value={adjusting?.grade || "待判断"}
-            onChange={(e) =>
-              setAdjusting(
-                (current) =>
-                  current && {
-                    ...current,
-                    grade: e.target.value as Prospect["grade"],
-                  },
-              )
-            }
-          >
-            {(Object.keys(labels) as Prospect["grade"][]).map((grade) => (
-              <option key={grade} value={grade}>
-                {grade === "待判断" ? grade : `${grade} ${labels[grade]}`}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="field">
-          调整原因
-          <textarea
-            aria-label="调整原因"
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-          />
-        </label>
-      </Sheet>
+
       <Sheet
         open={regenerate !== null}
         title="确认覆盖正文"
@@ -2359,17 +2210,17 @@ export default function Operations({
           <button
             className="button primary"
             disabled={
-              !exportRows(exportScope, rows, w.selected, visible).length
+              !exportRows(exportScope, resultRows, w.selected, visible).length
             }
             onClick={exportList}
           >
-            导出 {exportRows(exportScope, rows, w.selected, visible).length}{" "}
+            导出 {exportRows(exportScope, resultRows, w.selected, visible).length}{" "}
             位用户
           </button>
         }
       >
         <p>当前任务：{w.batches.find(batch => batch.id === (activeHistoryBatchId || w.batchId))?.name || "当前任务"}</p>
-        <p>导出范围：当前筛选结果（{visible.length} 位用户）</p>
+        <p>导出范围：当前筛选结果（{visible.length} 条记录，包含全部分页）</p>
         <p>导出 CSV，只包含本次范围的虚构用户和业务字段。</p>
       </Sheet>
       <Sheet

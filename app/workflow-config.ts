@@ -23,7 +23,7 @@ export type ScreeningRules = {
 export const defaultRules=():ScreeningRules=>({
   revision:1,industry:'新媒体运营',offering:'小红书、抖音代运营与达人投放服务',audience:'有新媒体增长需求的品牌方和商家',businessNeeds:'寻找代运营或达人合作；招聘运营；存在流量、转化、投放或账号运营问题',region:'全国',
   contactableScenes:['service','creator','hiring','problem'],
-  grades:{A:'明确问合作、价格、联系方式，或表达近期需求。',B:'有可承接的业务需求，正在了解、对比或寻找解决方案。',C:'存在间接机会或需要进一步确认，不因昵称中性或身份暂不明而直接排除。',D:'没有识别出明确业务意向或可用上下文；G 类模型不发送，A 类模型可使用产品话术。'},
+  grades:{A:'明确问合作、价格、联系方式，或表达近期需求。',B:'有可承接的业务需求，正在了解、对比或寻找解决方案。',C:'存在间接机会或需要进一步确认，不因昵称中性或身份暂不明而直接排除。',D:'没有识别出明确业务意向或可用上下文；G 类模型不发送；A 类模型仅在上下文可判断时回应。'},
   exclusions:'',
   positive:'A：怎么联系，想了解代运营合作。\nB：品牌在找达人做种草，正在看合作方案。\nC：正在招运营，团队方案还在评估。',
   negative:'C：谢谢分享，先收藏。\nD：本月活动，接种草合作。',

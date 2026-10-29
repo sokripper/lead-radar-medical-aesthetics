@@ -10,6 +10,8 @@ export type Prospect = {
   sourceUrl?: string;
   sourceTaskCode?: string;
   commentId?: string;
+  targetKind?: 'comment' | 'post';
+  recordKind?: 'comment' | 'post'; // Raw main-post records do not contain a user comment.
   sourcePost?: SourcePost;
   businessScene?: '服务合作'|'达人投放'|'招聘运营'|'运营问题'|'泛讨论'|'推广广告'|'待判断';
   reachability?: '优先触达'|'建议触达'|'探索触达'|'暂不触达';
@@ -23,7 +25,7 @@ export function reachabilityOf(lead:Pick<Prospect,'grade'|'reachability'>,grade:
 export function isContactable(lead:Pick<Prospect,'grade'|'reachability'>,grade:Prospect['grade']=lead.grade){
   return grade!=='D'&&grade!=='待判断'&&reachabilityOf(lead,grade)!=='暂不触达';
 }
-export type SendStatus = '待执行' | '执行中' | '发送成功' | '发送失败' | '结果待核实' | '已取消';
+export type SendStatus = '待执行' | '执行中' | '发送成功' | '发送失败' | '结果待核实' | '已取消' | '已跳过';
 export const accountStates = ['未授权','授权中','正常','已失效','受限','连接异常'] as const;
 export type AccountStatus = typeof accountStates[number];
 export type TodoStatus = '待处理'|'处理中'|'待确认'|'等待发送结果'|'发送失败'|'结果待核实'|'已完成'|'已转人工'|'已关闭';
@@ -36,7 +38,7 @@ export function taskStatus(results:SendStatus[],paused=false,abnormal=false) {
   if(results.includes('执行中'))return '执行中';
   if(results.every(s=>s==='待执行'))return '待执行';
   if(pending)return '执行中';
-  if(results.every(s=>s==='发送成功'))return '已完成';
+  if(results.every(s=>s==='发送成功'||s==='已跳过'))return '已完成';
   if(results.every(s=>s==='已取消'))return '已取消';
   return results.includes('发送成功')?'部分完成':'已结束';
 }

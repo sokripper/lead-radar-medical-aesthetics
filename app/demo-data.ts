@@ -1,3 +1,4 @@
+import {postOnlyDemoLeads} from './post-only-demo.ts';
 import { scenarioLeads, presentName } from './preview-scenarios.ts';
 import type { Prospect as Lead } from './operations-state';
 const precisionDemoLeads: Lead[] = [
@@ -112,6 +113,7 @@ export const walkthroughLeads: Lead[] = bulkDemoLeads.map((lead,index) => ({
 }));
 export const demoLeads: Lead[] = [...[...precisionDemoLeads, ...bulkDemoLeads, ...commentDemoLeads, ...walkthroughLeads].map(lead => ({
   ...lead, name:presentName(lead.name),
+  ...([1004,3004].includes(lead.id) ? {context:"这个可以吗？",evidence:"无法从原评论判断所指内容，不回复该评论；主帖仍保留供 A 模型补充。"} : {}),
   commentId: `demo-comment-${lead.id}`,
-  sourcePost: lead.sourceIssue === "missing_context" ? undefined : { ...sourcePosts[lead.businessScene === '运营问题' ? 1 : ['达人投放', '招聘运营'].includes(lead.businessScene || '') ? 2 : 0] },
-})), ...scenarioLeads];
+  sourcePost: lead.sourceIssue === "missing_context" ? undefined : [1004,3004].includes(lead.id) ? {id:"demo-post-budget",authorId:"demo-author-budget",authorName:"品牌经营笔记",title:"小店刚起步，怎样分配内容预算？",content:"预算有限，先把客户是谁、主打产品是什么说明白，再决定拍摄和投放的比例。"} : { ...sourcePosts[lead.businessScene === '运营问题' ? 1 : ['达人投放', '招聘运营'].includes(lead.businessScene || '') ? 2 : 0] },
+})), ...scenarioLeads, ...postOnlyDemoLeads];

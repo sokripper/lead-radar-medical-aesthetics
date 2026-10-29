@@ -158,3 +158,8 @@ export function followupCopy(lead: Context | undefined) {
   // specific user reply or add unverified personal experience during follow-up.
   return lead ? conversationAngle(lead).followup : "可以呀，你想先聊哪块？";
 }
+
+export function postOpeningCopy(post: {title:string;content:string}, rules: Pick<ScreeningRules,'offering'>) {
+  const topic=post.title.replace(/[。！？!?]$/,'');
+  return `“${topic}”这个话题，确实要结合实际业务来看。我们提供${rules.offering.trim()}，可以围绕具体问题交流，不急着定方案。`;
+}

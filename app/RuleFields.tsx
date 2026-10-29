@@ -13,7 +13,7 @@ export function RuleSummary({ rules }: { rules: ScreeningRules }) {
       {rules.materials.length > 0 && <p className="additional-exclusion"><strong>已导入业务资料：</strong>{rules.materials.join("、")}</p>}
       <div className="system-rule-note">
         <strong>系统自动判断</strong>
-        <p>结合行业相关性、身份匹配度、需求明确度和行动信号，给出意向等级与触达建议。</p>
+        <p>结合行业相关性、身份匹配度、需求明确度和行动信号，判断本任务可触达的范围。</p>
       </div>
       {rules.exclusions.trim() && <p className="additional-exclusion"><strong>补充排除：</strong>{rules.exclusions}</p>}
     </>
