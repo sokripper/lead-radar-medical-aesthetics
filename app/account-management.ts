@@ -5,7 +5,6 @@ export type ManagedAccount = {
   platform: ManagedPlatform;
   name: string;
   handle: string;
-  parentId: string;
   status: ManagedAccountStatus;
   assignedTo: string[];
 };
@@ -82,9 +81,9 @@ export function restoreQuota(value: unknown): TenantQuota {
 export const currentOperator = "当前操作人";
 export const demoOperators = [currentOperator, "运营同事 A", "运营同事 B"];
 export const demoAccounts = (): ManagedAccount[] => [
-  { id: "xhs-main", platform: "小红书", name: "小红书品牌号", handle: "xhs-brand", parentId: "", status: "正常", assignedTo: [currentOperator] },
-  { id: "xhs-sub", platform: "小红书", name: "小红书顾问号", handle: "xhs-adviser", parentId: "xhs-main", status: "正常", assignedTo: [currentOperator] },
-  { id: "dy-main", platform: "抖音", name: "抖音品牌号", handle: "dy-brand", parentId: "", status: "待运维", assignedTo: [] },
+  { id: "xhs-main", platform: "小红书", name: "小红书品牌号", handle: "xhs-brand", status: "正常", assignedTo: [currentOperator] },
+  { id: "xhs-sub", platform: "小红书", name: "小红书顾问号", handle: "xhs-adviser", status: "正常", assignedTo: [currentOperator] },
+  { id: "dy-main", platform: "抖音", name: "抖音品牌号", handle: "dy-brand", status: "待运维", assignedTo: [] },
 ];
 
 export function restoreManagedAccounts(value: unknown): ManagedAccount[] {
@@ -95,7 +94,6 @@ export function restoreManagedAccounts(value: unknown): ManagedAccount[] {
       platform: item.platform === "抖音" ? "抖音" : "小红书",
       name: item.name,
       handle: typeof item.handle === "string" ? item.handle : "",
-      parentId: typeof item.parentId === "string" ? item.parentId : "",
       status: (["正常", "已失效", "受限"] as string[]).includes(item.status) ? item.status : "待运维",
       assignedTo: Array.isArray(item.assignedTo) ? item.assignedTo.filter((name: unknown) => typeof name === "string") : [],
     })) as ManagedAccount[];
@@ -115,9 +113,17 @@ export function accountDraftError(draft: ManagedAccount, accounts: ManagedAccoun
   if (!draft.name.trim() || !draft.handle.trim()) return "请填写账号名称和平台账号标识。";
   if (accounts.some(item => item.id !== editingId && item.platform === draft.platform && item.handle === draft.handle.trim()))
     return "该平台账号标识已存在。";
-  if (draft.parentId && !accounts.some(item => item.id === draft.parentId && item.platform === draft.platform && !item.parentId))
-    return "子账号必须归属同平台主账号。";
-  if (editingId && accounts.some(item => item.parentId === editingId) && (draft.parentId || accounts.find(item => item.id === editingId)?.platform !== draft.platform))
-    return "此主账号下已有子账号，不能更改平台或变为子账号。";
   return "";
+}
+
+export type PlatformMember = { id: string; name: string; login: string; role: "管理员" | "成员"; enabled: boolean };
+export const demoMembers = (): PlatformMember[] => [
+  {id:currentOperator,name:"顾凯",login:"gukai",role:"管理员",enabled:true},
+  {id:"运营同事 A",name:"运营同事 A",login:"operator-a",role:"成员",enabled:true},
+  {id:"运营同事 B",name:"运营同事 B",login:"operator-b",role:"成员",enabled:true},
+];
+export function restoreMembers(value: unknown): PlatformMember[] {
+  if(!Array.isArray(value)) return demoMembers();
+  const members=value.filter(m=>m && typeof m.id === "string" && typeof m.name === "string" && typeof m.login === "string").map(m=>({...m,role:m.role === "管理员" ? "管理员" as const : "成员" as const,enabled:m.enabled !== false}));
+  return members.some(m=>m.id === currentOperator) ? members : demoMembers();
 }

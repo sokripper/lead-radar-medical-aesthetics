@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { demoAccounts, restoreManagedAccounts, assignedAccounts, accountReady, accountDraftError, demoQuota, quotaRemaining, quotaCanReserve, reserveQuota, settleQuota, releaseQuota, restoreQuota } from '../app/account-management.ts';
+import { demoMembers, restoreMembers, demoAccounts, restoreManagedAccounts, assignedAccounts, accountReady, accountDraftError, demoQuota, quotaRemaining, quotaCanReserve, reserveQuota, settleQuota, releaseQuota, restoreQuota } from '../app/account-management.ts';
 
 test('personal side sees only accounts assigned to the current operator and supported platform', () => {
   const accounts = demoAccounts();
@@ -15,11 +15,20 @@ test('revoking assignment or losing login disables that exact account', () => {
   assert.equal(accountReady(accounts.map(item => item.id === 'xhs-sub' ? { ...item, status: '已失效' } : item), 'xhs-sub'), false);
 });
 
-test('child accounts must belong to a primary on the same platform', () => {
+test('social accounts are flat and legacy parent links do not survive restore', () => {
   const accounts = demoAccounts();
-  assert.equal(accountDraftError(accounts[1], accounts, 'xhs-sub'), '');
-  assert.match(accountDraftError({ ...accounts[1], platform: '抖音' }, accounts, 'xhs-sub'), /同平台/);
-  assert.match(accountDraftError({ ...accounts[0], parentId: 'dy-main' }, accounts, 'xhs-main'), /同平台/);
+  assert.ok(accounts.every(account => !('parentId' in account)));
+  const restored = restoreManagedAccounts([{...accounts[1], parentId:'xhs-main'}]);
+  assert.equal('parentId' in restored[0], false);
+  assert.equal(accountDraftError({...accounts[1],platform:'抖音'}, accounts, 'xhs-sub'), '');
+  assert.match(accountDraftError({...accounts[1],handle:'xhs-brand'},accounts,'xhs-sub'), /已存在/);
+});
+
+test('workspace members restore separately from social accounts', () => {
+  assert.deepEqual(restoreMembers(undefined), demoMembers());
+  const members=demoMembers().map(m=>m.id==='运营同事 A'?{...m,enabled:false}:m);
+  assert.equal(restoreMembers(members)[1].enabled,false);
+  assert.equal(restoreManagedAccounts(demoAccounts())[0].assignedTo[0], members[0].id);
 });
 
 test('old empty or pre-assignment account records migrate safely', () => {

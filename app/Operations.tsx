@@ -28,7 +28,7 @@ import MessageWorkbench from "./MessageWorkbench";
 import CommentContext from "./CommentContext";
 import { withPreviewScenarios, presentName } from "./preview-scenarios";
 import AccountInbox from "./AccountInbox";
-import {matchComments, newestMessages, type InboxMessage, type CommentCandidate} from "./account-inbox";
+import {newestMessages, type InboxMessage, type CommentCandidate} from "./account-inbox";
 import { commentTarget, postActions, canReply, advanceCommentPlan, type CommentTarget } from "./comment-outreach";
 import { originalPostUrl } from "./source-data";
 import { bulkDemoTaskCode, commentDemoTaskCode, walkthroughTaskCode } from "./demo-data";
@@ -36,6 +36,9 @@ import { RuleSummary, RuleFields } from "./RuleFields";
 import AccountAdmin from "./AccountAdmin";
 import {
   type ManagedAccount,
+  type PlatformMember,
+  demoMembers,
+  restoreMembers,
   type QuotaModel,
   type TenantQuota,
   demoAccounts,
@@ -168,6 +171,7 @@ export type Workspace = {
   outreach: OutreachProfile;
   accounts: Record<Platform, AccountStatus>;
   managedAccounts: ManagedAccount[];
+  members?: PlatformMember[];
   industry: string;
   region: string;
   monitor: Monitoring;
@@ -253,6 +257,7 @@ const initial = (leads: Prospect[]): Workspace => withBulkDemo({
   },
   accounts: { 小红书: "未授权" },
   managedAccounts: demoAccounts(),
+  members: demoMembers(),
   industry: "新媒体运营",
   region: "全国",
   monitor: emptyMonitoring(),
@@ -520,6 +525,7 @@ export default function Operations({
                   batchId: batch.id,
                 })),
             managedAccounts: restoreManagedAccounts(x.managedAccounts),
+            members: restoreMembers(x.members),
             quota: restoreQuota(x.quota),
             rules: restoreRules(x.rules || {
               industry: x.industry || "新媒体运营",
@@ -1063,36 +1069,7 @@ export default function Operations({
       receivedAt:new Date().toLocaleString("zh-CN"),
     };
     setW(old=>({...old,inboxMessages:[message,...old.inboxMessages]}));
-    setNotice("已收到演示私信，可以查看原评论候选。");
-  }
-  function associateInbox(messageId: string, record: CommentCandidate) {
-    setW(old=>{
-      const message=old.inboxMessages.find(m=>m.id === messageId);
-      if(!message || message.association || !matchComments(message,commentRecords).some(c=>c.taskId === record.taskId && c.leadId === record.leadId)) return old;
-      return {...old,inboxMessages:old.inboxMessages.map(m=>m.id === messageId ? {...m,association:{taskId:record.taskId,leadId:record.leadId}}:m)};
-    });
-    setNotice("已关联原评论，可以继续跟进私信。");
-  }
-  function inboxReplyAllowed(message: InboxMessage) {
-    const linked=w.tasks.find(t=>t.id === message.association?.taskId);
-    return Boolean(linked && accountReady(w.managedAccounts,message.accountId) && !message.replyText && quotaRemaining(w.quota,linked.quotaModel)>0);
-  }
-  function submitInboxReply(id:string,text:string) {
-    if(!text.trim()) return;
-    setW(old=>{
-      const message=old.inboxMessages.find(m=>m.id === id);
-      const linked=old.tasks.find(t=>t.id === message?.association?.taskId);
-      if(!message || !linked || message.replyText || !accountReady(old.managedAccounts,message.accountId) || quotaRemaining(old.quota,linked.quotaModel)<=0) return old;
-      return {...old,quota:reserveQuota(old.quota,linked.quotaModel),inboxMessages:old.inboxMessages.map(m=>m.id === id ? {...m,replyText:text.trim(),replyStatus:"待执行",quotaModel:linked.quotaModel}:m)};
-    });
-  }
-  function inboxReplyResult(id:string,result:SendStatus) {
-    setW(old=>{
-      const message=old.inboxMessages.find(m=>m.id === id);
-      if(!message || !message.quotaModel || !accountReady(old.managedAccounts,message.accountId) || !["待执行","执行中"].includes(message.replyStatus || "") || !["发送成功","发送失败","结果待核实"].includes(result)) return old;
-      return {...old,quota:result === "发送成功" ? settleQuota(old.quota,message.quotaModel) : result === "发送失败" ? releaseQuota(old.quota,message.quotaModel) : old.quota,
-        inboxMessages:old.inboxMessages.map(m=>m.id === id ? {...m,replyStatus:result}:m)};
-    });
+    setNotice("已拉取到一条新私信。");
   }
   function setTodo(t: Task, id: number, status: TodoStatus, reason = "") {
     setW((old) => ({
@@ -1302,7 +1279,7 @@ export default function Operations({
     }
   }
   if (view === "accounts") {
-    return <AccountAdmin accounts={w.managedAccounts} quota={w.quota} onQuotaChange={quota => patch({ quota })} onChange={managedAccounts => {
+    return <AccountAdmin members={w.members || demoMembers()} onMembersChange={members=>patch({members})} accounts={w.managedAccounts} quota={w.quota} onQuotaChange={quota => patch({ quota })} onChange={managedAccounts => {
       setW(old => ({ ...old, managedAccounts,
         sender: accountReady(managedAccounts, old.sender) ? old.sender : "",
       }));
@@ -1328,7 +1305,7 @@ export default function Operations({
                 : "管理羚羊任务，数据就绪后开始解析。"
               : view === "leads"
                 ? current ? "查看本次筛选结果及关联的触达任务。" : "按筛选任务查看已处理名单。"
-                : view === "inbox" ? "先查看账号，再处理该账号收到的私信。" : activeTouchTask
+                : view === "inbox" ? "按社媒账号查看拉取到的私信。" : activeTouchTask
                   ? `来自${activeTouchTask.sourceTaskName || "筛选任务"} · ${activeTouchTask.quotaModel} 类模型`
                   : "按任务管理评论名单、话术和执行结果。"}
           </p>
@@ -1675,9 +1652,8 @@ export default function Operations({
             </button>
           </section>
         ) : null)}
-      {view === "inbox" && <AccountInbox previewTools={previewTools} accounts={personalAccounts} monitoring={w.inboxMonitoring} messages={inboxMessages} records={commentRecords} accountId={inboxAccountId} onAccount={setInboxAccountId}
-        onReply={submitInboxReply} onReplyResult={inboxReplyResult} replyAllowed={inboxReplyAllowed} onToggle={id=>patch({inboxMonitoring:{...w.inboxMonitoring,[id]:w.inboxMonitoring[id] === false}})} onSimulate={simulateInbox} onAssociate={associateInbox}
-        onOpen={message=>{if(message.association)setConvo({task:message.association.taskId,lead:message.association.leadId});}} />}
+      {view === "inbox" && <AccountInbox previewTools={previewTools} accounts={personalAccounts} monitoring={w.inboxMonitoring} messages={inboxMessages} accountId={inboxAccountId} onAccount={setInboxAccountId}
+        onToggle={id=>patch({inboxMonitoring:{...w.inboxMonitoring,[id]:w.inboxMonitoring[id] === false}})} onSimulate={simulateInbox} />}
       {view === "workflow" && (
         !activeTouchTask ? (
           <>
