@@ -1,5 +1,6 @@
 "use client";
 import { useState, type ReactNode } from "react";
+import { StatusPill } from "./WorkspaceUI";
 import { reviewPage, type ReviewRecipient } from "./message-review";
 
 export default function MessageWorkbench({ items, renderEditor, listOnly = false }: {
@@ -40,7 +41,7 @@ export default function MessageWorkbench({ items, renderEditor, listOnly = false
             {result.rows.map(item => <tr key={item.id} className={!listOnly && active?.id === item.id ? "is-active" : ""}>
               <td>{listOnly ? <strong>{item.name}</strong> : <button className="message-person-button" aria-label={`查看话术：${item.name}`} aria-pressed={active?.id === item.id} onClick={() => setSelected(item.id)}><strong>{item.name}</strong><span>{item.text || "暂无话术"}</span></button>}</td>
               <td><span className={`message-grade grade-${item.grade}`}>{item.grade}</span></td>
-              <td><span className={item.issue ? "message-issue" : "message-state"}>{item.issue ? "待处理" : item.edited && item.status === "已生成" ? "已编辑" : item.status}</span></td>
+              <td><StatusPill status={item.issue ? "待处理" : item.edited && item.status === "已生成" ? "已编辑" : item.status}/></td>
               {listOnly && <td>{renderEditor(item.id)}</td>}
             </tr>)}
           </tbody></table>

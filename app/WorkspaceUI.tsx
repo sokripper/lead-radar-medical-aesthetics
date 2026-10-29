@@ -8,15 +8,12 @@ export function StatusPill({
   status: string;
   children?: ReactNode;
 }) {
-  const tone = /成功|完成|正常|可解析/.test(status)
-    ? "success"
-    : /失败|受限|异常/.test(status)
-      ? "danger"
-      : /核实|暂停|待确认/.test(status)
-        ? "warning"
-        : /执行中|待处理|处理中|等待/.test(status)
-          ? "active"
-          : "neutral";
+  const tone = /核实/.test(status) ? "review"
+    : /失败|受限|异常|失效/.test(status) ? "danger"
+    : /暂停|待确认|待关联|部分完成/.test(status) ? "warning"
+    : /成功|完成|正常|可解析/.test(status) ? "success"
+    : /执行中|待处理|处理中|等待|监控中/.test(status) ? "active"
+    : "neutral";
   return (
     <span className={`status-pill status-${tone}`}>
       <i />
@@ -46,7 +43,6 @@ export function MessageBubble({
         {status && (
           <div className="message-result">
             <StatusPill status={status} />
-            <span>演示消息</span>
           </div>
         )}
       </div>

@@ -1,3 +1,4 @@
+import { scenarioLeads, presentName } from './preview-scenarios.ts';
 import type { Prospect as Lead } from './operations-state';
 const precisionDemoLeads: Lead[] = [
   { id: 7, sourceIssue: 'missing_context', name: '提问样本', handle: 'demo_07', grade: '待判断', score: 0, intent: '上下文不足', context: '这个可以吗？', evidence: '缺少所指对象与父评论，无法判断需求', location: '未知', status: '', source: '小红书评论', accountId: '', message: '',businessScene:'待判断',reachability:'暂不触达' },
@@ -97,4 +98,20 @@ export const bulkDemoLeads: Lead[] = [
   }),
   ...precisionDemoLeads.filter(lead => lead.sourceIssue).map((lead, index) => ({ ...lead, id: 1091 + index, name: `${lead.name} · A模型演示`, handle: `bulk_anomaly_${index + 1}`, sourceTaskCode: bulkDemoTaskCode })),
 ];
-export const demoLeads: Lead[] = [...precisionDemoLeads, ...bulkDemoLeads];
+const sourcePosts = [
+  { id: 'demo-post-operations', authorId: 'demo-author-service', authorName: '账号运营服务商（演示）', title: '品牌账号运营与代运营合作交流', content: '提供内容运营与投放服务，欢迎商家在评论区交流需求。', },
+  { id: 'demo-post-growth', authorId: 'demo-author-growth', authorName: '增长经验分享（演示）', title: '账号有流量，为什么没有咨询？', content: '讨论内容定位、投放与咨询转化的问题，评论区分享各自遇到的情况。', },
+  { id: 'demo-post-team', authorId: 'demo-author-team', authorName: '品牌运营交流（演示）', title: '自建团队、达人合作还是外包？', content: '不同阶段的商家如何安排运营团队和达人合作，欢迎讨论。', },
+];
+export const commentDemoTaskCode = 'demo-comments-20261028';
+export const commentDemoLeads: Lead[] = precisionDemoLeads.map((lead,index) => ({...lead,id:2001+index,name:`${lead.name} · 评论演示`,handle:`comment_user_${index+1}`,accountId:`comment_account_${index+1}`,sourceTaskCode:commentDemoTaskCode}));
+export const walkthroughTaskCode = 'demo-walkthrough-20261028';
+export const walkthroughLeads: Lead[] = bulkDemoLeads.map((lead,index) => ({
+  ...lead, id:3001+index, name:lead.name.replace(/ · .*/, '') + ` · 体验${index+1}`,
+  handle:`walkthrough_user_${index+1}`, accountId:`walkthrough_account_${index+1}`,sourceTaskCode:walkthroughTaskCode,
+}));
+export const demoLeads: Lead[] = [...[...precisionDemoLeads, ...bulkDemoLeads, ...commentDemoLeads, ...walkthroughLeads].map(lead => ({
+  ...lead, name:presentName(lead.name),
+  commentId: `demo-comment-${lead.id}`,
+  sourcePost: lead.sourceIssue === "missing_context" ? undefined : { ...sourcePosts[lead.businessScene === '运营问题' ? 1 : ['达人投放', '招聘运营'].includes(lead.businessScene || '') ? 2 : 0] },
+})), ...scenarioLeads];

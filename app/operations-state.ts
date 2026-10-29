@@ -1,3 +1,7 @@
+export type SourcePost = {
+  id: string; authorId: string; authorName: string; title: string; content: string;
+  url?: string; authorUrl?: string;
+};
 export type Prospect = {
   id: number; name: string; handle: string; grade: 'A' | 'B' | 'C' | 'D' | '待判断'; score: number;
   intent: string; context: string; evidence: string; location: string;
@@ -5,6 +9,8 @@ export type Prospect = {
   sourceIssue?: 'missing_context' | 'missing_body';
   sourceUrl?: string;
   sourceTaskCode?: string;
+  commentId?: string;
+  sourcePost?: SourcePost;
   businessScene?: '服务合作'|'达人投放'|'招聘运营'|'运营问题'|'泛讨论'|'推广广告'|'待判断';
   reachability?: '优先触达'|'建议触达'|'探索触达'|'暂不触达';
 };

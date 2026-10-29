@@ -13,20 +13,22 @@ import {
   type OutreachProfile,
   emptyOutreachProfile,
   restoreOutreachProfile,
-  openingCopy,
   followupCopy,
   openingTemplates,
   approachLabels,
   projectNames,
-  outreachIssue,
-  outreachKey,
   productOpeningCopy,
   contextualOpeningCopy,
   contextualCopyVersion,
 } from "./outreach-copy";
 import MessageWorkbench from "./MessageWorkbench";
+import CommentContext from "./CommentContext";
+import { withPreviewScenarios, presentName } from "./preview-scenarios";
+import AccountInbox from "./AccountInbox";
+import {matchComments, newestMessages, type InboxMessage, type CommentCandidate} from "./account-inbox";
+import { retainedPosts, commentTarget, type CommentTarget } from "./comment-outreach";
 import { originalPostUrl } from "./source-data";
-import { bulkDemoTaskCode } from "./demo-data";
+import { bulkDemoTaskCode, commentDemoTaskCode, walkthroughTaskCode } from "./demo-data";
 import { RuleSummary, RuleFields } from "./RuleFields";
 import AccountAdmin from "./AccountAdmin";
 import {
@@ -56,7 +58,6 @@ import {
   reviseRules,
   partitionResults,
 } from "./workflow-config";
-import { reviseMonitoring } from "./operations-state";
 import {
   type Prospect,
   type SendStatus,
@@ -70,25 +71,21 @@ import {
   editTaskMessage,
   startNextRecipient,
   todoStatus,
-  beijingTime,
   toggleId,
   emptyMonitoring,
-  monitorError,
-  monitorStatus,
   canGenerate,
   adjustGrade,
   transitionSend,
   contactStatus,
   exportRows,
   csvCell,
-  prepareDemoRecipients,
   readyRecipients,
   removeSubmitted,
   mergePreparedQueue,
   reachabilityOf,
 } from "./operations-state";
 
-type View = "screening" | "leads" | "workflow" | "accounts";
+type View = "screening" | "leads" | "workflow" | "accounts" | "inbox";
 type Platform = "小红书";
 type Batch = {
   id: number;
@@ -100,7 +97,7 @@ type Batch = {
   touchMode: TouchMode;
 };
 type CollectionTaskStatus = "待配置" | "等待数据" | "可解析" | "解析中" | "解析完成";
-type TaskWorkspaceTab = "overview" | "results" | "attention" | "rules";
+type TaskWorkspaceTab = "overview" | "results" | "attention" | "rules" | "posts";
 type CollectionTask = {
   id: number;
   name: string;
@@ -121,7 +118,9 @@ type Queue = {
   edited: number[];
   copyKeys?: Record<number, string>;
 };
-type Task = {
+export type Task = {
+  channel?: "comment" | "private";
+  targets?: Record<number, CommentTarget>;
   id: number;
   name: string;
   sourceTaskName?: string;
@@ -145,7 +144,10 @@ type Task = {
   notes: Record<number, { text: string; time: string }[]>;
   events: string[];
 };
-type Workspace = {
+export type Workspace = {
+  presentationVersion?: number;
+  inboxMonitoring: Record<string, boolean>;
+  inboxMessages: InboxMessage[];
   rules: ScreeningRules;
   supplements: Record<number, string>;
   sender: string;
@@ -182,6 +184,28 @@ const platform = (l: Prospect): Platform => {
   return "小红书";
 };
 function withBulkDemo(workspace: Workspace, leads: Prospect[]): Workspace {
+  const base=withBaseDemo(workspace,leads);
+  const named={...base,collectionTasks:base.collectionTasks.map(t=>({...t,name:presentName(t.name)})),batches:base.batches.map(t=>({...t,name:presentName(t.name)})),tasks:base.tasks.map(t=>({...t,name:presentName(t.name),sourceTaskName:presentName(t.sourceTaskName || "")})),inboxMessages:base.inboxMessages.map(m=>({...m,userName:presentName(m.userName)}))};
+  return withPreviewScenarios(named,leads);
+}
+function withBaseDemo(workspace: Workspace, leads: Prospect[]): Workspace {
+  const walkthrough=leads.filter(lead=>lead.sourceTaskCode === walkthroughTaskCode);
+  if(walkthrough.length && !workspace.collectionTasks.some(task=>task.sourceTaskCode === walkthroughTaskCode)) {
+    workspace={...workspace,
+      grades:{...Object.fromEntries(walkthrough.map(lead=>[lead.id,lead.grade])),...workspace.grades},
+      collectionTasks:[{id:10004,name:"主流程体验 · 从筛选到评论",sourceTaskCode:walkthroughTaskCode,platform:"小红书",status:"可解析",createdAt:"2026/10/28",rules:defaultRules(),touchMode:"PRECISION"},...workspace.collectionTasks],
+    };
+  }
+  const comments = leads.filter(lead => lead.sourceTaskCode === commentDemoTaskCode);
+  if (comments.length && !workspace.collectionTasks.some(task => task.sourceTaskCode === commentDemoTaskCode)) {
+    const rules=defaultRules();
+    workspace={...workspace,
+      grades:{...Object.fromEntries(comments.map(lead=>[lead.id,lead.grade])),...workspace.grades},
+      failed:[...new Set([...workspace.failed,...comments.filter(lead=>lead.sourceIssue === "missing_body").map(lead=>lead.id)])],
+      collectionTasks:[...workspace.collectionTasks,{id:10003,name:"评论触达演示 · G 类模型",sourceTaskCode:commentDemoTaskCode,platform:"小红书",status:"解析完成",createdAt:"2026/10/28",rules,touchMode:"PRECISION",batchId:20003}],
+      batches:[...workspace.batches,{id:20003,name:"评论触达演示 · G 类模型",sourceTaskCode:commentDemoTaskCode,ids:comments.map(lead=>lead.id),time:"2026/10/28",rules,touchMode:"PRECISION"}],
+    };
+  }
   const sample = leads.filter(lead => lead.sourceTaskCode === bulkDemoTaskCode);
   if (!sample.length || workspace.collectionTasks.some(task => task.sourceTaskCode === bulkDemoTaskCode)) return workspace;
   const rules = defaultRules();
@@ -198,6 +222,8 @@ const initial = (leads: Prospect[]): Workspace => withBulkDemo({
   sender: "xhs-main",
   dataState: "待处理",
   schema: 11,
+  inboxMonitoring: {},
+  inboxMessages: [],
   batches: [],
   batchId: 0,
   collectionTasks: [{
@@ -242,7 +268,9 @@ const quotaModelOf = (mode:TouchMode):QuotaModel => mode === "BULK" ? "A" : "G";
 const quotaNeedsOf = (recipients:Prospect[],mode:TouchMode):Record<QuotaModel,number> =>
   mode === "BULK" ? { A:recipients.length, G:0 } : { A:0, G:recipients.length };
 const sharedTasks = [
+  { code: walkthroughTaskCode, name: "主流程体验 · 从筛选到评论", status: "已入库" },
   { code: "6b27c68f027e412680393da7b322516e", name: "社媒获客_小红书2", status: "已入库" },
+  { code: commentDemoTaskCode, name: "评论触达演示 · G 类模型", status: "已入库" },
   { code: bulkDemoTaskCode, name: "A 类模型 · 全量触达演示", status: "已入库" },
 ] as const;
 const taskStatusCopy: Record<CollectionTaskStatus, { title: string; detail: string }> = {
@@ -342,8 +370,10 @@ export default function Operations({
   leads,
   view,
   navigate,
+  previewTools = false,
 }: {
   leads: Prospect[];
+  previewTools?: boolean;
   view: View;
   navigate: (v: View) => void;
 }) {
@@ -361,6 +391,7 @@ export default function Operations({
   const [editingCollectionTaskId, setEditingCollectionTaskId] = useState<number | null>(null);
   const [activeCollectionTaskId, setActiveCollectionTaskId] = useState<number | null>(null);
   const [taskWorkspaceTab, setTaskWorkspaceTab] = useState<TaskWorkspaceTab>("overview");
+  const [inboxAccountId, setInboxAccountId] = useState<string | null>(null);
   const [activeTouchTaskId, setActiveTouchTaskId] = useState<number | null>(null);
   const [activeHistoryBatchId, setActiveHistoryBatchId] = useState<number | null>(null);
   const [reviewStep, setReviewStep] = useState<1 | 2>(1);
@@ -375,11 +406,7 @@ export default function Operations({
   const [ruleDraft, setRuleDraft] = useState(defaultRules);
   const [attentionOpen, setAttentionOpen] = useState(false);
   const [attentionFilter, setAttentionFilter] = useState("ALL");
-  const [monitorEdit, setMonitorEdit] = useState<{
-    task: number;
-    draft: Monitoring;
-  } | null>(null);
-  const [monitorSaveError, setMonitorSaveError] = useState("");
+
   const [returnReview, setReturnReview] = useState(false);
   const [review, setReview] = useState(false);
   const [detail, setDetail] = useState<number | null>(null);
@@ -449,7 +476,10 @@ export default function Operations({
           setW(withBulkDemo({
             ...initial(leads),
             ...x,
+            presentationVersion:x.presentationVersion,
             schema: 11,
+            inboxMonitoring: x.inboxMonitoring || {},
+            inboxMessages: Array.isArray(x.inboxMessages) ? x.inboxMessages : [],
             batches: x.batches.map((batch: Batch) => ({
               ...batch,
               touchMode: batch.touchMode === "BULK" ? "BULK" : "PRECISION",
@@ -536,7 +566,6 @@ export default function Operations({
       queueMicrotask(() => setSaveError("跟进草稿保存失败，请保留当前编辑。"));
     }
   }, [loaded, replyDrafts]);
-  const pool = [...new Set(w.batches.flatMap((b) => b.ids))];
   const activeCollectionTask = w.collectionTasks.find((task) => task.id === activeCollectionTaskId);
   const current = review && w.queue.sourceBatchId
     ? w.batches.find((batch) => batch.id === w.queue.sourceBatchId)
@@ -593,11 +622,11 @@ export default function Operations({
   const identityOK = canGenerate("formal", w.identity, w.attested);
   const productCopy = (l: Prospect) => activeTouchMode === "BULK" && w.grades[l.id] === "D";
   const copyKeyFor = (l: Prospect) => productCopy(l)
-    ? JSON.stringify(["PRODUCT_CONVERSATION_V2", activeRules.revision, activeRules.offering, activeRules.businessNeeds])
-    : JSON.stringify([contextualCopyVersion, activeRules.revision, activeRules.offering, l.context]);
+    ? JSON.stringify(["COMMENT_PRODUCT_V1", activeRules.revision, activeRules.offering, activeRules.businessNeeds])
+    : JSON.stringify(["COMMENT_V1", contextualCopyVersion, activeRules.revision, activeRules.offering, l.context]);
   function copyIssue(l: Prospect) {
     const issue = rulesError(activeRules);
-    return issue ||
+    return issue || (!commentTarget(l) ? "缺少主帖或评论定位资料，暂不能创建评论任务。" : "") ||
       (w.queue.drafts[l.id] !== undefined && w.queue.copyKeys?.[l.id] !== copyKeyFor(l)
         ? "生成规则已更新，请核对或更新这条话术。" : "");
   }
@@ -607,17 +636,15 @@ export default function Operations({
   const remainingQuota:Record<QuotaModel,number> = {
     A:quotaRemaining(w.quota,"A"), G:quotaRemaining(w.quota,"G"),
   };
-  const remainingQuotaSummary = quotaModelKeys.map(model=>`${model} 类模型 ${remainingQuota[model].toLocaleString()}`).join(" · ");
   const senderReady = accountReady(w.managedAccounts, w.sender);
   const taskAccount = (t: Task) => w.managedAccounts.find(account => account.id === t.senderAccountId);
   const taskReady = (t: Task) => accountReady(w.managedAccounts, t.senderAccountId || "");
   const ready = identityOK && senderReady
-    ? readyRecipients(leads, w.queue, w.grades, occupied, { 小红书: true }, copyPending.map(l => l.id), leads.filter(l=>available(l.id)).map(l=>l.id)).filter(l => available(l.id))
+    ? readyRecipients(leads, w.queue, w.grades, occupied, { 小红书: true }, copyPending.map(l => l.id), leads.filter(l=>available(l.id)).map(l=>l.id)).filter(l => available(l.id) && commentTarget(l))
     : [];
   const activeQuotaModel = quotaModelOf(activeTouchMode);
   const readyQuotaNeeds = quotaNeedsOf(ready, activeTouchMode);
   const readyQuotaAvailable = quotaCanReserve(w.quota, readyQuotaNeeds);
-  const readyQuotaSummary = `${activeQuotaModel} 类模型 ${ready.length} 次`;
   const quotaShortageSummary = `${activeQuotaModel} 类模型需 ${readyQuotaNeeds[activeQuotaModel]} / 余 ${remainingQuota[activeQuotaModel]}`;
   const detailLead = leads.find((l) => l.id === detail);
   const task = w.tasks.find((t) => t.id === convo?.task);
@@ -625,17 +652,20 @@ export default function Operations({
   const replyTask = w.tasks.find((t) => t.id === reply?.task);
   const replyQuotaModel = reply ? replyTask?.quotaModel || "G" : null;
   const replyQuotaAvailable = Boolean(replyQuotaModel && quotaRemaining(w.quota, replyQuotaModel) > 0);
-  const unread = w.tasks.reduce(
-    (n, t) =>
-      n +
-      t.replies.filter(
-        (id) =>
-          !["已完成", "已关闭", "已转人工"].includes(
-            todoStatus(t.followResults[id], t.todos[id]),
-          ),
-      ).length,
-    0,
-  );
+  const commentRecords: CommentCandidate[] = w.tasks.filter(t=>t.channel === "comment").flatMap(t=>t.ids.filter(id=>t.results[id] === "发送成功" && t.targets?.[id]).map(id=>({
+    taskId:t.id,leadId:id,accountId:t.senderAccountId || "",taskName:t.name,target:t.targets![id],lead:leads.find(l=>l.id === id)!,replyText:t.texts[id],
+  }))).filter(record=>record.lead);
+  const inboxMessages: InboxMessage[] = newestMessages([
+    ...w.inboxMessages,
+    ...w.tasks.flatMap(t=>t.replies.map(id=>({
+      id:`legacy-${t.id}-${id}`,accountId:t.senderAccountId || "",userId:leads.find(l=>l.id === id)?.handle,userName:leads.find(l=>l.id === id)?.name || "未知用户",
+      text:"可以，想再了解一下。",receivedAt:"历史私信",association:{taskId:t.id,leadId:id},
+    }))),
+  ].map((message: InboxMessage)=>{
+    const linkedTask=w.tasks.find(t=>t.id === message.association?.taskId);
+    return {...message,status:message.id.startsWith("legacy-") && linkedTask && message.association ? todoStatus(linkedTask.followResults[message.association.leadId],linkedTask.todos[message.association.leadId]) : message.association ? todoStatus(message.replyStatus, undefined) : "待关联"};
+  }));
+  const incomingText=(taskId:number,leadId:number)=>inboxMessages.find(m=>m.id === `legacy-${taskId}-${leadId}`)?.text || "可以，想再了解一下。";
   const activeTouchTask = w.tasks.find((item) => item.id === activeTouchTaskId);
   function message(l: Prospect) {
     if (productCopy(l)) return productOpeningCopy(activeRules, l.id);
@@ -764,7 +794,7 @@ export default function Operations({
         ],
         batchId: id,
         selected: [],
-        failed: [8],
+        failed: [...new Set([...old.failed, ...leads.filter(l => l.sourceTaskCode === task.sourceTaskCode && l.sourceIssue === "missing_body").map(l => l.id)])],
         dataState: "部分完成",
         collectionTasks: old.collectionTasks.map((item) => item.id === task.id ? { ...item, status: "解析完成", batchId: id } : item),
       }));
@@ -808,11 +838,14 @@ export default function Operations({
     const id = Date.now();
     setW((old) => ({
       ...old,
+      inboxMonitoring: { ...old.inboxMonitoring, [old.sender]: old.inboxMonitoring[old.sender] ?? true },
       tasks: [
         ...old.tasks,
         {
           id,
-          name: `${sourceName} · 触达批次 ${old.tasks.length + 1}`,
+          channel: "comment",
+          targets: Object.fromEntries(ready.map(l => [l.id, commentTarget(l)!])),
+          name: `${sourceName} · 评论批次 ${old.tasks.length + 1}`,
           sourceTaskName: sourceName,
           sourceTaskCode: sourceCode,
           createdAt: new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" }),
@@ -831,7 +864,7 @@ export default function Operations({
           replies: [],
           followups: {},
           followResults: {},
-          monitor: reviseMonitoring(emptyMonitoring(), old.monitor),
+          monitor: emptyMonitoring(),
           paused: false,
           todos: {},
           notes: {},
@@ -852,7 +885,7 @@ export default function Operations({
     navigate("workflow");
     window.setTimeout(() => setActiveTouchTaskId(id), 0);
     setNotice(
-      `已创建触达任务“${sourceName} · 触达批次 ${w.tasks.length + 1}”，可在任务详情中继续编辑话术并查看执行结果。`,
+      `已创建评论任务“${sourceName} · 评论批次 ${w.tasks.length + 1}”，核对话术后开始评论。`,
     );
   }
   function outcome(
@@ -871,7 +904,7 @@ export default function Operations({
         if (follow && ["已关闭", "已转人工"].includes(t.todos[id])) return t;
         const from = t[key][id] || "待执行";
         if (
-          t.paused &&
+          !follow && t.paused &&
           from === "待执行" &&
           event !== "cancel" &&
           !event.startsWith("verified-")
@@ -938,7 +971,7 @@ export default function Operations({
     const status = (follow ? t.followResults : t.results)[id];
     const blocked =
       (follow && ["已关闭", "已转人工"].includes(t.todos[id])) ||
-      t.paused ||
+      (!follow && t.paused) ||
       !taskReady(t);
     return (
       <div className="inline-actions result-controls">
@@ -998,52 +1031,45 @@ export default function Operations({
       </div>
     );
   }
-  function checkReply(t: Task, add = true) {
-    if (
-      t.paused ||
-      monitorStatus(t.monitor) !== "等待检查" ||
-      !taskReady(t)
-    )
-      return;
-    setW((old) => ({
-      ...old,
-      tasks: old.tasks.map((x) =>
-        x.id === t.id
-          ? { ...x, monitor: { ...x.monitor, checking: true } }
-          : x,
-      ),
-    }));
-    window.setTimeout(() => {
-      const replyId = t.ids.find(
-        (i) => t.results[i] === "发送成功" && !t.replies.includes(i),
-      );
-      const found = add && replyId !== undefined;
-      setW((old) => ({
-        ...old,
-        tasks: old.tasks.map((x) => {
-          if (x.id !== t.id) return x;
-          return {
-            ...x,
-            replies:
-              found && !x.replies.includes(replyId!)
-                ? [...x.replies, replyId!]
-                : x.replies,
-            monitor: {
-              ...x.monitor,
-              checking: false,
-              lastCheck: new Date().toLocaleString("zh-CN", {
-                timeZone: "Asia/Shanghai",
-              }),
-            },
-          };
-        }),
-      }));
-      setNotice(
-        found
-          ? "收到示例回复，待办尚未处理。"
-          : "检查完成（模拟）：没有新增回复，未生成内容。",
-      );
-    }, 800);
+  function simulateInbox(accountId: string, unmatched: boolean) {
+    if(!accountReady(w.managedAccounts,accountId) || w.inboxMonitoring[accountId] === false) return;
+    const record = unmatched ? undefined : commentRecords.find(c=>c.accountId === accountId);
+    const message: InboxMessage={
+      id:`inbox-${Date.now()}`,accountId,userId:record?.target.userId,userName:record?.target.userName || "新咨询用户（演示）",
+      text:record ? record.lead.businessScene === "泛讨论" ? "看到你在评论里提到账号运营，想了解代运营的服务和收费。" : `关于${record.lead.intent.split(/[／/]/)[0]}，想具体了解一下，可以聊聊吗？` : unmatched ? "你好，想了解一下。" : "想了解代运营的服务和收费，可以介绍一下吗？",
+      receivedAt:new Date().toLocaleString("zh-CN"),
+    };
+    setW(old=>({...old,inboxMessages:[message,...old.inboxMessages]}));
+    setNotice("已收到演示私信，可以查看原评论候选。");
+  }
+  function associateInbox(messageId: string, record: CommentCandidate) {
+    setW(old=>{
+      const message=old.inboxMessages.find(m=>m.id === messageId);
+      if(!message || message.association || !matchComments(message,commentRecords).some(c=>c.taskId === record.taskId && c.leadId === record.leadId)) return old;
+      return {...old,inboxMessages:old.inboxMessages.map(m=>m.id === messageId ? {...m,association:{taskId:record.taskId,leadId:record.leadId}}:m)};
+    });
+    setNotice("已关联原评论，可以继续跟进私信。");
+  }
+  function inboxReplyAllowed(message: InboxMessage) {
+    const linked=w.tasks.find(t=>t.id === message.association?.taskId);
+    return Boolean(linked && accountReady(w.managedAccounts,message.accountId) && !message.replyText && quotaRemaining(w.quota,linked.quotaModel)>0);
+  }
+  function submitInboxReply(id:string,text:string) {
+    if(!text.trim()) return;
+    setW(old=>{
+      const message=old.inboxMessages.find(m=>m.id === id);
+      const linked=old.tasks.find(t=>t.id === message?.association?.taskId);
+      if(!message || !linked || message.replyText || !accountReady(old.managedAccounts,message.accountId) || quotaRemaining(old.quota,linked.quotaModel)<=0) return old;
+      return {...old,quota:reserveQuota(old.quota,linked.quotaModel),inboxMessages:old.inboxMessages.map(m=>m.id === id ? {...m,replyText:text.trim(),replyStatus:"待执行",quotaModel:linked.quotaModel}:m)};
+    });
+  }
+  function inboxReplyResult(id:string,result:SendStatus) {
+    setW(old=>{
+      const message=old.inboxMessages.find(m=>m.id === id);
+      if(!message || !message.quotaModel || !accountReady(old.managedAccounts,message.accountId) || !["待执行","执行中"].includes(message.replyStatus || "") || !["发送成功","发送失败","结果待核实"].includes(result)) return old;
+      return {...old,quota:result === "发送成功" ? settleQuota(old.quota,message.quotaModel) : result === "发送失败" ? releaseQuota(old.quota,message.quotaModel) : old.quota,
+        inboxMessages:old.inboxMessages.map(m=>m.id === id ? {...m,replyStatus:result}:m)};
+    });
   }
   function setTodo(t: Task, id: number, status: TodoStatus, reason = "") {
     setW((old) => ({
@@ -1076,7 +1102,7 @@ export default function Operations({
       text:
         replyDrafts[`${t.id}:${id}`] ??
         followupCopy(leads.find((l) => l.id === id)),
-      contextChanged: true,
+      contextChanged: false,
       reviewedLatest: false,
     });
   }
@@ -1156,22 +1182,7 @@ export default function Operations({
       </div>
     );
   }
-  function changeMonitor(t: Task, action: "pause" | "end") {
-    setW((old) => ({
-      ...old,
-      tasks: old.tasks.map((x) =>
-        x.id === t.id
-          ? {
-              ...x,
-              monitor:
-                action === "end"
-                  ? { ...x.monitor, ended: true }
-                  : { ...x.monitor, paused: !x.monitor.paused },
-            }
-          : x,
-      ),
-    }));
-  }
+
   function exportList() {
     const data = exportRows(exportScope, rows, w.selected, visible);
     const csv = [
@@ -1254,43 +1265,7 @@ export default function Operations({
       "筛选规则已保存，用于之后的分析；已有结果、人工调整和消息保持不变。",
     );
   }
-  function openMonitor(t: Task) {
-    const active =
-      t.monitor.enabled &&
-      !["已结束", "已到期"].includes(monitorStatus(t.monitor));
-    setMonitorSaveError("");
-    setMonitorEdit({
-      task: t.id,
-      draft: active ? { ...t.monitor } : { ...emptyMonitoring() },
-    });
-  }
-  function saveMonitor() {
-    if (!monitorEdit) return;
-    const target = w.tasks.find((t) => t.id === monitorEdit.task);
-    if (!target) return;
-    try {
-      const monitor = reviseMonitoring(target.monitor, monitorEdit.draft);
-      setW((old) => ({
-        ...old,
-        tasks: old.tasks.map((t) =>
-          t.id === target.id
-            ? {
-                ...t,
-                monitor,
-                events: [
-                  ...t.events,
-                  `${new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })} · 回复检查设置：${monitor.enabled ? monitor.interval + " 分钟，截止 " + monitor.deadline : "仅首轮"}`,
-                ],
-              }
-            : t,
-        ),
-      }));
-      setMonitorEdit(null);
-      setNotice("回复检查设置已保存，不重发首条消息；只检查发送成功的用户。");
-    } catch (e) {
-      setMonitorSaveError((e as Error).message);
-    }
-  }
+
   function openSettings(back = false) {
     setReturnReview(back);
     if (back) setReview(false);
@@ -1322,7 +1297,7 @@ export default function Operations({
               ? activeCollectionTask?.name || "采集任务"
               : view === "leads"
                 ? current?.name || "历史名单"
-                : activeTouchTask?.name || "触达任务"}
+                : view === "inbox" ? "私信监控" : activeTouchTask?.name || "评论触达"}
           </h1>
           <p>
             {view === "screening"
@@ -1331,9 +1306,9 @@ export default function Operations({
                 : "管理羚羊任务，数据就绪后开始解析。"
               : view === "leads"
                 ? current ? "查看本次筛选结果及关联的触达任务。" : "按筛选任务查看已处理名单。"
-                : activeTouchTask
+                : view === "inbox" ? "先查看账号，再处理该账号收到的私信。" : activeTouchTask
                   ? `来自${activeTouchTask.sourceTaskName || "筛选任务"} · ${activeTouchTask.quotaModel} 类模型`
-                  : "按任务查看名单、话术、执行账号和发送结果。"}
+                  : "按任务管理评论名单、话术和执行结果。"}
           </p>
         </div>
       </div>
@@ -1423,6 +1398,7 @@ export default function Operations({
                 {[
                   ["overview", "任务概览"],
                   ["results", activeCollectionTask.touchMode === "BULK" ? "A 类模型结果" : "G 类模型结果"],
+                  ["posts", "关联主帖"],
                   ["attention", `数据异常${attention.length ? `（${attention.length}）` : ""}`],
                   ["rules", "规则快照"],
                 ].map(([key, label]) => (
@@ -1449,6 +1425,10 @@ export default function Operations({
                 complete={activeCollectionTask.status === "解析完成"} />
             </section>
           )}
+          {activeCollectionTask && taskWorkspaceTab === "posts" && <section className="surface retained-posts">
+            <div className="section-heading"><div><h2>关联主帖</h2><p>保留主帖内容与发帖人，用于定位评论；主帖不因意向筛选而删除。</p></div></div>
+            {retainedPosts(leads.filter(l => (l.sourceTaskCode || "6b27c68f027e412680393da7b322516e") === activeCollectionTask.sourceTaskCode)).map(post => <article className="retained-post" key={post.id}><span className="field-hint">{post.authorName} · 定位资料</span><h3>{post.title}</h3><p>{post.content}</p><small>关联评论 {leads.filter(l => l.sourcePost?.id === post.id && (l.sourceTaskCode || "6b27c68f027e412680393da7b322516e") === activeCollectionTask.sourceTaskCode).length} 条</small></article>)}
+          </section>}
           {activeCollectionTask && taskWorkspaceTab === "rules" && (
             <section className="surface screening-rules task-rule-snapshot">
               <div className="section-heading">
@@ -1660,19 +1640,12 @@ export default function Operations({
                         >
                           详情
                         </button>
-                        {w.tasks.some((t) => t.ids.includes(l.id)) && (
+                        {w.tasks.some((t) => t.replies.includes(l.id)) && (
                           <button
                             className="button text"
-                            onClick={() =>
-                              setConvo({
-                                task: w.tasks
-                                  .filter((t) => t.ids.includes(l.id))
-                                  .at(-1)!.id,
-                                lead: l.id,
-                              })
-                            }
+                            onClick={() => {const linked=w.tasks.find(t=>t.replies.includes(l.id));setInboxAccountId(linked?.senderAccountId || null);navigate("inbox");}}
                           >
-                            查看聊天
+                            查看私信
                           </button>
                         )}
                         </div>
@@ -1714,13 +1687,16 @@ export default function Operations({
             </button>
           </section>
         ) : null)}
+      {view === "inbox" && <AccountInbox previewTools={previewTools} accounts={personalAccounts} monitoring={w.inboxMonitoring} messages={inboxMessages} records={commentRecords} accountId={inboxAccountId} onAccount={setInboxAccountId}
+        onReply={submitInboxReply} onReplyResult={inboxReplyResult} replyAllowed={inboxReplyAllowed} onToggle={id=>patch({inboxMonitoring:{...w.inboxMonitoring,[id]:w.inboxMonitoring[id] === false}})} onSimulate={simulateInbox} onAssociate={associateInbox}
+        onOpen={message=>{if(message.association)setConvo({task:message.association.taskId,lead:message.association.leadId});}} />}
       {view === "workflow" && (
         !activeTouchTask ? (
           <>
             <div className="engage-summary">
-              <div><strong>{w.tasks.length}</strong><span>触达任务</span></div>
-              <div><strong>{w.tasks.reduce((sum, item) => sum + item.ids.length, 0)}</strong><span>触达用户</span></div>
-              <div><strong>{unread}</strong><span>待跟进回复</span></div>
+              <div><strong>{w.tasks.filter(t=>t.channel === "comment").length}</strong><span>评论任务</span></div>
+              <div><strong>{w.tasks.filter(t=>t.channel === "comment").reduce((sum, item) => sum + item.ids.length, 0)}</strong><span>触达用户</span></div>
+
             </div>
             {w.queue.ids.length > 0 && w.queue.sourceBatchId && (
               <section className="draft-resume">
@@ -1728,7 +1704,7 @@ export default function Operations({
                 <button className="button primary" onClick={() => { submitting.current = false; setReview(true); }}>继续创建</button>
               </section>
             )}
-            {!w.tasks.length ? (
+            {!w.tasks.some(t=>t.channel === "comment") ? (
               <section className="surface empty-state">
                 <h2>还没有触达任务</h2>
                 <p>请进入筛选任务，基于该任务的可触达名单构建触达任务。</p>
@@ -1736,14 +1712,14 @@ export default function Operations({
               </section>
             ) : (
               <section className="surface touch-task-list-surface">
-                <div className="section-heading"><div><h2>触达任务</h2><p>每个任务独立管理名单、话术、账号和执行结果。</p></div></div>
+                <div className="section-heading"><div><h2>评论任务</h2><p>确认名单与话术后，回复主帖下的目标评论。</p></div></div>
                 <div className="table-wrap">
                   <table className="touch-task-table">
                     <thead><tr><th>任务名称</th><th>来源筛选任务</th><th>模型</th><th>名单</th><th>执行账号</th><th>状态</th><th>操作</th></tr></thead>
-                    <tbody>{w.tasks.map((t) => {
+                    <tbody>{w.tasks.filter(t=>t.channel === "comment").map((t) => {
                       const status = taskStatus(Object.values(t.results), t.paused, !taskReady(t));
                       return <tr key={t.id}>
-                        <td><strong>{t.name}</strong><small>{t.createdAt || "已创建"}</small></td>
+                        <td><strong>{t.name}</strong><small>{t.channel === "comment" ? "评论回复" : "历史私信"} · {t.createdAt || "已创建"}</small></td>
                         <td>{t.sourceTaskName || "历史筛选任务"}</td>
                         <td><span className={`mode-pill mode-${t.quotaModel === "A" ? "bulk" : "precision"}`}>{t.quotaModel} 类</span></td>
                         <td>{t.ids.length} 位</td>
@@ -1756,6 +1732,7 @@ export default function Operations({
                 </div>
               </section>
             )}
+            {w.tasks.some(t=>t.channel !== "comment") && <details className="legacy-touch-tasks"><summary>历史私信任务（旧版）</summary><div>{w.tasks.filter(t=>t.channel !== "comment").map(t=><button className="button secondary" key={t.id} onClick={()=>setActiveTouchTaskId(t.id)}>{t.name}</button>)}</div></details>}
           </>
         ) : (
           <>
@@ -1764,7 +1741,7 @@ export default function Operations({
                 <button className="button text back-to-tasks" onClick={() => setActiveTouchTaskId(null)}>← 返回触达任务列表</button>
                 <div className="inline-actions">
                   {activeTouchTask.ids.some((id) => activeTouchTask.results[id] === "待执行") && !activeTouchTask.paused && !Object.values(activeTouchTask.results).some(status => status === "执行中" || status === "结果待核实") && (
-                    <button className="button primary" disabled={!taskReady(activeTouchTask) || activeTouchTask.ids.some(id => activeTouchTask.results[id] === "待执行" && !activeTouchTask.texts[id]?.trim())} onClick={() => startTouchTask(activeTouchTask)}>开始触达</button>
+                    <button className="button primary" disabled={!taskReady(activeTouchTask) || activeTouchTask.ids.some(id => activeTouchTask.results[id] === "待执行" && !activeTouchTask.texts[id]?.trim())} onClick={() => startTouchTask(activeTouchTask)}>{activeTouchTask.channel === "comment" ? "开始评论" : "开始历史私信任务"}</button>
                   )}
                   {(activeTouchTask.paused || Object.values(activeTouchTask.results).includes("执行中") || (activeTouchTask.startedAt && Object.values(activeTouchTask.results).includes("待执行"))) && (
                     <button className="button secondary" disabled={activeTouchTask.paused && (!taskReady(activeTouchTask) || activeTouchTask.ids.some(id => activeTouchTask.results[id] === "待执行" && !activeTouchTask.texts[id]?.trim()))}
@@ -1776,7 +1753,7 @@ export default function Operations({
                   )}
                 </div>
               </div>
-              {activeTouchTask.ids.every(id => activeTouchTask.results[id] === "待执行") && <ProgressSteps className="flow-steps" steps={["确认触达范围", "话术与账号", "开始触达"]} current={2} />}
+              {activeTouchTask.ids.every(id => activeTouchTask.results[id] === "待执行") && <ProgressSteps className="flow-steps" steps={["确认触达范围", "话术与账号", "开始评论"]} current={2} />}
               <label className="field touch-task-name">任务名称
                 <input aria-label="触达任务名称" value={activeTouchTask.name} disabled={!canEditTask(activeTouchTask)}
                   onChange={event => { const name = event.target.value; setW(old => ({ ...old, tasks: old.tasks.map(item => item.id === activeTouchTask.id && canEditTask(item) ? { ...item, name } : item) })); }} />
@@ -1785,7 +1762,7 @@ export default function Operations({
               <div className="touch-task-summary-grid">
                 <div><span>来源筛选任务</span><strong>{activeTouchTask.sourceTaskName || "历史筛选任务"}</strong></div>
                 <div><span>筛选模型</span><strong>{activeTouchTask.quotaModel} 类模型</strong></div>
-                <div><span>执行账号</span><strong>{activeTouchTask.senderAccountName || "待分配"}</strong></div>
+                <div><span>执行账号</span><strong>{activeTouchTask.senderAccountName || "待分配"}</strong></div><div><span>触达渠道</span><strong>{activeTouchTask.channel === "comment" ? "评论回复" : "历史私信"}</strong></div>
                 <div><span>任务状态</span><StatusPill status={taskStatus(Object.values(activeTouchTask.results), activeTouchTask.paused, !taskReady(activeTouchTask))} /></div>
               </div>
               <MetricLine items={[
@@ -1810,12 +1787,12 @@ export default function Operations({
                   const suggestion = w.grades[id] === "D" ? productOpeningCopy(sourceRules, id) : contextualOpeningCopy(lead, sourceRules);
                   const updateText = (text: string) => setW(old => ({ ...old, tasks: old.tasks.map(item => item.id === activeTouchTask.id ? editTaskMessage(item, id, text) : item) }));
                   return <>
-                    <section className="message-context"><span>原始内容</span><p>{lead.context}</p><details><summary>查看关联依据</summary><p>{lead.evidence}</p></details></section>
-                    <label className="field">触达话术<textarea aria-label={`${lead.name}的任务话术`} value={activeTouchTask.texts[id] || ""} disabled={!editable} onChange={event => updateText(event.target.value)} /></label>
+                    {activeTouchTask.channel === "comment" ? <CommentContext lead={lead} snapshot={activeTouchTask.targets?.[id]} /> : <blockquote>{lead.context}</blockquote>}
+                    <label className="field">{activeTouchTask.channel === "comment" ? "我方评论回复" : "历史私信内容"}<textarea aria-label={`${lead.name}的任务话术`} value={activeTouchTask.texts[id] || ""} disabled={!editable} onChange={event => updateText(event.target.value)} /></label>
                     <div className="message-editor-meta"><span>{editable ? "编辑自动保存" : activeTouchTask.results[id] === "待执行" ? "任务执行中，暂停后可编辑" : "执行时话术快照 · 不可修改"}</span><span>{(activeTouchTask.texts[id] || "").length} 字</span></div>
                     {editable && <details className="message-suggestion"><summary>查看自然表达建议</summary><p>{suggestion}</p><button className="button secondary" onClick={() => updateText(suggestion)}>采用建议，替换当前话术</button></details>}
-                    <div className="recipient-card-footer"><StatusPill status={activeTouchTask.results[id]} /><button className="button text" onClick={() => setConvo({ task: activeTouchTask.id, lead: id })}>查看会话</button></div>
-                    <Disclosure title="演示执行结果" className="demo-controls">{controls(activeTouchTask, id)}</Disclosure>
+                    <div className="recipient-card-footer"><StatusPill status={activeTouchTask.results[id]} /></div>
+                    {previewTools && <Disclosure title="测试执行结果" className="demo-controls">{controls(activeTouchTask,id)}</Disclosure>}
                   </>;
                 }}
               />
@@ -1854,7 +1831,7 @@ export default function Operations({
         >
           <summary>批量话术与真实素材</summary>
           <p>
-            请填写实际对外身份并确认。当前环境只使用虚构名单模拟，不发送真实私信。
+            请填写实际对外身份并确认。当前环境只使用虚构名单模拟，不发送真实评论或私信。
           </p>
           <label className="field">
             真实对外身份
@@ -1974,7 +1951,7 @@ export default function Operations({
       <FlowPage
         open={review}
         wide
-        title="创建触达任务"
+        title="创建评论触达任务"
         subtitle={current?.name || "当前筛选任务"}
         className="review-sheet"
         onClose={() => setReview(false)}
@@ -1992,9 +1969,9 @@ export default function Operations({
           </>
         }
       >
-        <ProgressSteps className="flow-steps" steps={["确认触达范围", "话术与账号", "开始触达"]} current={reviewStep - 1} />
+        <ProgressSteps className="flow-steps" steps={["确认触达范围", "话术与账号", "开始评论"]} current={reviewStep - 1} />
         {reviewStep === 1 ? <section className="audience-confirm">
-          <h2>按本任务的可触达范围创建</h2>
+          <h2>确认需要回复的评论用户</h2><p>在对应主帖下回复用户的原评论。主帖仅作为定位资料保留。</p>
           <p>{activeQuotaModel === "G" ? "纳入本任务中的 A、B、C 类用户。" : "纳入本任务中的 A、B、C、D 类用户。"}已加入触达任务的记录不会重复进入。</p>
           <div className="audience-count"><strong>{w.queue.included.length}</strong><span>位用户将进入本次触达任务</span></div>
           <div className="audience-breakdown">{["A", "B", "C", "D"].map(grade => <div key={grade}><span>{grade} 类</span><strong>{w.queue.included.filter(id => w.grades[id] === grade).length}</strong></div>)}</div>
@@ -2041,9 +2018,9 @@ export default function Operations({
           renderEditor={id => {
             const l = leads.find(item => item.id === id)!;
             return <>
-              <section className="message-context"><span>原始内容</span><p>{l.context}</p><details><summary>查看关联依据</summary><p>{l.evidence}</p></details></section>
+              <CommentContext lead={l} />
               {copyIssue(l) && <p className="notice">{copyIssue(l)}<button className="button text" onClick={() => patch({ queue: { ...w.queue, copyKeys: { ...w.queue.copyKeys, [id]: copyKeyFor(l) } } })}>保留当前话术并确认</button></p>}
-              <label className="field">触达话术
+              <label className="field">评论回复内容
                 <textarea aria-label={`${l.name}的拟发送内容`} value={w.queue.drafts[id] || ""} placeholder="填写本次沟通内容"
                   onChange={e => patch({ queue: { ...w.queue, drafts: { ...w.queue.drafts, [id]: e.target.value },
                     copyKeys: { ...w.queue.copyKeys, [id]: copyIssue(l) ? (w.queue.copyKeys?.[id] || "") : copyKeyFor(l) },
@@ -2190,112 +2167,7 @@ export default function Operations({
           <p className="table-empty">当前没有这类记录。</p>
         )}
       </Sheet>
-      <Sheet
-        open={Boolean(monitorEdit)}
-        title="回复检查设置"
-        onClose={() => setMonitorEdit(null)}
-        footer={
-          <>
-            <button
-              className="button secondary"
-              onClick={() => setMonitorEdit(null)}
-            >
-              取消修改
-            </button>
-            <button
-              className="button primary"
-              disabled={Boolean(monitorEdit && monitorError(monitorEdit.draft))}
-              onClick={saveMonitor}
-            >
-              保存回复检查设置
-            </button>
-          </>
-        }
-      >
-        <p>
-          可以在首次发送后开启或调整。仅检查此任务中发送成功的用户，不重新发送首条消息。
-        </p>
-        <label className="checkbox-label">
-          <input
-            type="radio"
-            name="task-monitor"
-            checked={!monitorEdit?.draft.enabled}
-            onChange={() =>
-              setMonitorEdit((m) =>
-                m ? { ...m, draft: { ...m.draft, enabled: false } } : m,
-              )
-            }
-          />
-          仅首轮
-        </label>
-        <label className="checkbox-label">
-          <input
-            type="radio"
-            name="task-monitor"
-            checked={Boolean(monitorEdit?.draft.enabled)}
-            onChange={() =>
-              setMonitorEdit((m) =>
-                m ? { ...m, draft: { ...m.draft, enabled: true } } : m,
-              )
-            }
-          />
-          启用后续回复检查
-        </label>
-        {monitorEdit?.draft.enabled && (
-          <>
-            <label className="field">
-              检查间隔
-              <select
-                aria-label="任务检查间隔"
-                value={monitorEdit.draft.interval}
-                onChange={(e) =>
-                  setMonitorEdit((m) =>
-                    m
-                      ? {
-                          ...m,
-                          draft: { ...m.draft, interval: e.target.value },
-                        }
-                      : m,
-                  )
-                }
-              >
-                <option value="" disabled>
-                  请选择
-                </option>
-                <option value="30">30 分钟</option>
-                <option value="60">60 分钟</option>
-              </select>
-            </label>
-            <label className="field">
-              检查截止时间（北京时间）
-              <input
-                type="datetime-local"
-                aria-label="任务检查截止时间"
-                value={monitorEdit.draft.deadline}
-                onChange={(e) =>
-                  setMonitorEdit((m) =>
-                    m
-                      ? {
-                          ...m,
-                          draft: { ...m.draft, deadline: e.target.value },
-                        }
-                      : m,
-                  )
-                }
-              />
-            </label>
-            <p>
-              截止时间晚于当前时间，且不超过本次启用后 7
-              天。调整不会重置当前计划的起始时间。
-            </p>
-            {monitorError(monitorEdit.draft) && (
-              <p role="alert">{monitorError(monitorEdit.draft)}</p>
-            )}
-          </>
-        )}
-        {monitorSaveError && <p role="alert">{monitorSaveError}</p>}
-        <p className="field-hint">检查由演示按钮触发，不运行真实后台轮询。</p>
-      </Sheet>
+
       <Sheet
         open={Boolean(detailLead)}
         title={detailLead?.name || "用户详情"}
@@ -2345,16 +2217,7 @@ export default function Operations({
                 调整意向等级
               </button>
             </section>
-            <section className="detail-section">
-              <h3>原始评论</h3>
-              <blockquote>{detailLead.context}</blockquote>
-            </section>
-            <section className="detail-section">
-              <h3>相关帖子</h3>
-              <p className="field-hint">
-                虚构样本未提供原帖和父评论，不补写缺失原文。
-              </p>
-            </section>
+            <CommentContext lead={detailLead} />
             <Disclosure title="人工调整记录">
               {w.adjustments[detailLead.id]?.length ? (
                 <ol className="audit-list">
@@ -2533,7 +2396,6 @@ export default function Operations({
                   disabled={
                     !task.replies.includes(person.id) ||
                     Boolean(task.followups[person.id]) ||
-                    task.paused ||
                     ["已关闭", "已转人工", "已完成"].includes(
                       todoStatus(
                         task.followResults[person.id],
@@ -2544,7 +2406,7 @@ export default function Operations({
                   onClick={() => beginReply(task, person.id)}
                 >
                   <Icon name="spark" size={16} />
-                  回复这位用户
+                  回复私信
                 </button>
               </div>
             </div>
@@ -2557,48 +2419,18 @@ export default function Operations({
               <span>发送账号 · {task.senderAccountName || "历史账号"}</span>
               <StatusPill status={taskAccount(task)?.status || "未授权"} />
             </div>
-            <div className="monitor-strip">
-              <div>
-                <Icon name="clock" size={16} />
-                <p>回复检查：{monitorStatus(task.monitor)}</p>
-              </div>
-              <button className="button text" onClick={() => openMonitor(task)}>
-                回复检查设置
-              </button>
-            </div>
-            {task.monitor.enabled && (
-              <div className="chat-monitor-actions">
-                <button
-                  className="button text"
-                  disabled={["已到期", "已结束"].includes(
-                    monitorStatus(task.monitor),
-                  )}
-                  onClick={() => changeMonitor(task, "pause")}
-                >
-                  {task.monitor.paused ? "恢复回复检查" : "暂停回复检查"}
-                </button>
-                <button
-                  className="button text"
-                  onClick={() => changeMonitor(task, "end")}
-                >
-                  结束回复检查
-                </button>
-              </div>
-            )}
+
+            {task.channel === "comment" && <details className="comment-origin-record"><summary>查看此前评论触达记录 · {task.results[person.id]}</summary><CommentContext lead={person} snapshot={task.targets?.[person.id]} /><blockquote>{task.texts[person.id]}</blockquote></details>}
             <div className="chat-history">
               <div className="chat-divider">小红书私信 · 演示聊天记录</div>
-              <MessageBubble
-                sender="我方"
-                text={task.texts[person.id]}
-                status={task.results[person.id]}
-              />
+              {task.channel !== "comment" && <MessageBubble sender="我方" text={task.texts[person.id]} status={task.results[person.id]} />}
 
               {task.replies.includes(person.id) ? (
                 <>
                   <MessageBubble
                     incoming
                     sender={person.name}
-                    text="可以，想再了解一下。"
+                    text={incomingText(task.id,person.id)}
                   />
                   {task.followups[person.id] && (
                     <MessageBubble
@@ -2609,7 +2441,7 @@ export default function Operations({
                   )}
                 </>
               ) : (
-                <p className="chat-divider">暂无新回复</p>
+                <p className="chat-divider">尚未收到该用户的私信</p>
               )}
             </div>
             {task.replies.includes(person.id) && todoActions(task, person.id)}
@@ -2647,7 +2479,7 @@ export default function Operations({
                 保存备注
               </button>
             </section>
-            <Disclosure title="演示结果操作" className="demo-controls">
+            <Disclosure title="测试结果操作" className={`demo-controls ${previewTools ? "" : "hidden-preview-control"}`}>
               {controls(task, person.id)}
               {task.followups[person.id] && controls(task, person.id, true)}
             </Disclosure>
@@ -2672,7 +2504,7 @@ export default function Operations({
       </Sheet>
       <Sheet
         open={Boolean(reply)}
-        title="确认跟进回复"
+        title="确认私信回复"
         onClose={() => setReply(null)}
         footer={
           <button
@@ -2680,7 +2512,6 @@ export default function Operations({
             disabled={
               !reply?.text.trim() ||
               !replyTask ||
-              replyTask.paused ||
               Boolean(replyTask.followups[reply?.lead || 0]) ||
               !taskReady(replyTask) ||
               !replyQuotaAvailable ||
@@ -2694,8 +2525,7 @@ export default function Operations({
               if (
                 !reply ||
                 !replyTask ||
-                replyTask.paused ||
-                replyTask.followups[reply.lead] ||
+                  replyTask.followups[reply.lead] ||
                 !taskReady(replyTask) ||
                 !replyQuotaAvailable ||
                 !identityOK ||
@@ -2727,11 +2557,11 @@ export default function Operations({
           </button>
         }
       >
-        <blockquote>用户回复（示例）：可以，想再了解一下。</blockquote>
+        <blockquote>用户私信：{reply ? incomingText(reply.task,reply.lead) : ""}</blockquote>
         {reply?.contextChanged && (
           <div className="context-update" role="alert">
             <strong>确认前收到了一条新消息</strong>
-            <p>最新消息（示例）：我更关注恢复期，能先说明一下吗？</p>
+            <p>最新消息（示例）：想了解具体服务范围，可以先说明一下吗？</p>
             <p>请结合最新上下文重新核对回复内容，再进入待确认。</p>
           </div>
         )}
