@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import './console.css';
 import './workspace.css';
+import './projects.css';
 
 export const metadata: Metadata = {
   title: '线索雷达 · 潜客运营台',

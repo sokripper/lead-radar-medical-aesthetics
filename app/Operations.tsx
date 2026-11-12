@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useRef, useMemo, type ReactNode } from "react";
+import { useState, useEffect, useRef, useMemo, type ReactNode, type Dispatch, type SetStateAction } from "react";
 import Icon from "./Icon";
 import {withPostOnlyPreview, removeObsoletePostSamples} from "./post-only-demo";
 import {createTrialWorkspace, trialWorkspaceKey, trialDraftKey} from "./trial-workspace";
@@ -38,6 +38,7 @@ import {
   type ManagedAccount,
   type PlatformMember,
   demoMembers,
+  currentOperator,
   restoreMembers,
   type QuotaModel,
   type TenantQuota,
@@ -222,7 +223,7 @@ function withBaseDemo(workspace: Workspace, leads: Prospect[]): Workspace {
     batches: [...workspace.batches, { id: 20002, name: "A 类模型 · 评论触达", sourceTaskCode: bulkDemoTaskCode, ids: sample.map(lead => lead.id), time: "2026/10/27", rules, touchMode: "BULK" }],
   };
 }
-const initial = (leads: Prospect[]): Workspace => withBulkDemo({
+export const initial = (leads: Prospect[]): Workspace => withBulkDemo({
   rules: defaultRules(),
   supplements: {},
   sender: "xhs-main",
@@ -372,16 +373,22 @@ export default function Operations({
   navigate,
   previewTools = false,
   trial = false,
+  scope,
 }: {
   leads: Prospect[];
+  scope?: { workspace: Workspace; onChange: Dispatch<SetStateAction<Workspace>>; operatorId: string };
   previewTools?: boolean;
   trial?: boolean;
   view: View;
   navigate: (v: View) => void;
 }) {
   const leads = useMemo(() => [...inputLeads, ...postActions(inputLeads)], [inputLeads]);
-  const [w, setW] = useState(() => trial ? createTrialWorkspace(initial(leads),leads) : initial(leads));
-  const [loaded, setLoaded] = useState(false);
+  const [localWorkspace, setLocalWorkspace] = useState(() => trial ? createTrialWorkspace(initial(leads),leads) : initial(leads));
+  const w = scope?.workspace || localWorkspace;
+  const setW = scope?.onChange || setLocalWorkspace;
+  const scoped = Boolean(scope);
+  const operatorId = scope?.operatorId || currentOperator;
+  const [loaded, setLoaded] = useState(scoped);
   const [notice, setNotice] = useState("");
   const [saveError, setSaveError] = useState("");
   const [resultKind,setResultKind]=useState("ALL");
@@ -449,6 +456,7 @@ export default function Operations({
     return () => window.clearTimeout(timeout);
   }, [notice]);
   useEffect(() => {
+    if (scoped) return;
     const restore = window.setTimeout(() => {
       try {
         if (trial) {
@@ -569,17 +577,17 @@ export default function Operations({
       setLoaded(true);
     }, 0);
     return () => window.clearTimeout(restore);
-  }, [leads, inputLeads, trial]);
+  }, [leads, inputLeads, trial, scoped]);
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || scoped) return;
     try {
       localStorage.setItem(trial ? trialWorkspaceKey : "lead-radar-workspace-11", JSON.stringify(w));
     } catch {
       queueMicrotask(() => setSaveError("本地保存失败，刷新可能丢失编辑。"));
     }
-  }, [loaded, w, trial]);
+  }, [loaded, w, trial, scoped]);
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || scoped) return;
     try {
       localStorage.setItem(
         trial ? trialDraftKey : "lead-radar-reply-drafts-4",
@@ -588,7 +596,7 @@ export default function Operations({
     } catch {
       queueMicrotask(() => setSaveError("跟进草稿保存失败，请保留当前编辑。"));
     }
-  }, [loaded, replyDrafts, trial]);
+  }, [loaded, replyDrafts, trial, scoped]);
   const activeCollectionTask = w.collectionTasks.find((task) => task.id === activeCollectionTaskId);
   const current = review && w.queue.sourceBatchId
     ? w.batches.find((batch) => batch.id === w.queue.sourceBatchId)
@@ -657,14 +665,14 @@ export default function Operations({
         ? "生成规则已更新，请核对或更新这条话术。" : "");
   }
   const copyPending = leads.filter(l => w.queue.included.includes(l.id) && !w.queue.blocked.includes(l.id) && copyIssue(l));
-  const personalAccounts = assignedAccounts(w.managedAccounts);
+  const personalAccounts = assignedAccounts(w.managedAccounts, operatorId);
   const selectedAccount = personalAccounts.find(account => account.id === w.sender);
   const remainingQuota:Record<QuotaModel,number> = {
     A:quotaRemaining(w.quota,"A"), G:quotaRemaining(w.quota,"G"),
   };
-  const senderReady = accountReady(w.managedAccounts, w.sender);
+  const senderReady = accountReady(w.managedAccounts, w.sender, operatorId);
   const taskAccount = (t: Task) => w.managedAccounts.find(account => account.id === t.senderAccountId);
-  const taskReady = (t: Task) => accountReady(w.managedAccounts, t.senderAccountId || "");
+  const taskReady = (t: Task) => accountReady(w.managedAccounts, t.senderAccountId || "", operatorId);
   const ready = identityOK && senderReady
     ? readyRecipients(leads, w.queue, w.grades, occupied, { 小红书: true }, copyPending.map(l => l.id), leads.filter(l=>available(l.id)).map(l=>l.id)).filter(l => available(l.id) && commentTarget(l))
     : [];
@@ -941,7 +949,7 @@ export default function Operations({
         )
           return t;
         if (
-          !accountReady(old.managedAccounts, t.senderAccountId || "") &&
+          !accountReady(old.managedAccounts, t.senderAccountId || "", operatorId) &&
           from !== "执行中" &&
           !event.startsWith("verified-") &&
           event !== "cancel"
@@ -1061,7 +1069,7 @@ export default function Operations({
     );
   }
   function simulateInbox(accountId: string, unmatched: boolean) {
-    if(!accountReady(w.managedAccounts,accountId) || w.inboxMonitoring[accountId] === false) return;
+    if(!accountReady(w.managedAccounts,accountId,operatorId) || w.inboxMonitoring[accountId] === false) return;
     const record = unmatched ? undefined : commentRecords.find(c=>c.accountId === accountId);
     const message: InboxMessage={
       id:`inbox-${Date.now()}`,accountId,userId:record?.target.userId,userName:record?.target.userName || "新咨询用户（演示）",
@@ -1279,9 +1287,9 @@ export default function Operations({
     }
   }
   if (view === "accounts") {
-    return <AccountAdmin members={w.members || demoMembers()} onMembersChange={members=>patch({members})} accounts={w.managedAccounts} quota={w.quota} onQuotaChange={quota => patch({ quota })} onChange={managedAccounts => {
+    return <AccountAdmin hideMembers={scoped} hideQuota={scoped} members={w.members || demoMembers()} onMembersChange={members=>patch({members})} accounts={w.managedAccounts} quota={w.quota} onQuotaChange={quota => patch({ quota })} onChange={managedAccounts => {
       setW(old => ({ ...old, managedAccounts,
-        sender: accountReady(managedAccounts, old.sender) ? old.sender : "",
+        sender: accountReady(managedAccounts, old.sender, operatorId) ? old.sender : "",
       }));
     }} />;
   }
@@ -1335,15 +1343,15 @@ export default function Operations({
               <div className="collection-task-heading">
                 <div>
                   <h2>任务列表</h2>
-                  <p>系统按羚羊共享库中的任务 Key 自动建档；每个任务独立维护业务规则和处理记录。</p>
+                  <p>展示当前项目已绑定的瓴羊任务。数据同步后，可配置规则并开始处理。</p>
                 </div>
                 <span className="auto-sync-indicator"><i />自动同步已开启</span>
               </div>
               {!w.collectionTasks.length ? (
                 <div className="collection-task-empty">
                   <span className="upload-emblem"><Icon name="data" size={28} /></span>
-                  <h3>暂未同步到羚羊任务</h3>
-                  <p>系统会按共享库中的任务 Key 自动建档，无需手动填写任务 ID。同步后请补充该任务的业务规则。</p>
+                  <h3>项目尚未绑定采集任务</h3>
+                  <p>请由超级管理员在项目配置中绑定瓴羊任务。</p>
                 </div>
               ) : (
                 <div className="collection-task-table-wrap">

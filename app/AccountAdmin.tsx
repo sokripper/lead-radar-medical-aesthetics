@@ -17,7 +17,9 @@ const blank = (): ManagedAccount => ({
   id: "", platform: "小红书", name: "", handle: "", status: "待运维", assignedTo: [],
 });
 
-export default function AccountAdmin({ accounts, onChange, quota, onQuotaChange, members, onMembersChange }: {
+export default function AccountAdmin({ accounts, onChange, quota, onQuotaChange, members, onMembersChange, hideMembers = false, hideQuota = false }: {
+  hideQuota?: boolean;
+  hideMembers?: boolean;
   members: PlatformMember[];
   onMembersChange: (members: PlatformMember[]) => void;
   accounts: ManagedAccount[];
@@ -25,7 +27,7 @@ export default function AccountAdmin({ accounts, onChange, quota, onQuotaChange,
   quota: TenantQuota;
   onQuotaChange: (quota: TenantQuota) => void;
 }) {
-  const [tab,setTab]=useState<"members"|"social"|"quota">("members");
+  const [tab,setTab]=useState<"members"|"social"|"quota">(hideMembers ? "social" : "members");
   const [member,setMember]=useState<PlatformMember|null>(null);
   const [memberError,setMemberError]=useState("");
   const [memberSearch,setMemberSearch]=useState("");
@@ -60,11 +62,11 @@ export default function AccountAdmin({ accounts, onChange, quota, onQuotaChange,
   };
   return <>
     <div className="page-heading">
-      <div><div className="eyebrow">MANAGEMENT</div><h1>账号管理</h1><p>管理本平台成员，以及分配给成员使用的社媒账号。</p></div>
+      <div><div className="eyebrow">MANAGEMENT</div><h1>账号管理</h1><p>管理当前租户的社媒账号及成员使用权限。</p></div>
       {tab==="social" && <button className="button primary" onClick={() => open()}>添加社媒账号</button>}
       {tab==="members" && <button className="button primary" onClick={()=>{setMember({id:"",name:"",login:"",role:"成员",enabled:true});setMemberError("");}}>添加平台成员</button>}
     </div>
-    <nav className="management-tabs" aria-label="账号管理分类">{([['members','平台成员'],['social','社媒账号'],['quota','主体额度']] as const).map(([key,label])=><button key={key} aria-current={tab===key?'page':undefined} className={tab===key?'active':''} onClick={()=>setTab(key)}>{label}</button>)}</nav>
+    {!(hideMembers && hideQuota) && <nav className="management-tabs" aria-label="账号管理分类">{([['members','平台成员'],['social','社媒账号'],['quota','主体额度']] as const).filter(([key])=>(!hideMembers || key !== 'members') && (!hideQuota || key !== 'quota')).map(([key,label])=><button key={key} aria-current={tab===key?'page':undefined} className={tab===key?'active':''} onClick={()=>setTab(key)}>{label}</button>)}</nav>}
     {tab==="members" && <section className="surface admin-accounts">
       <div className="admin-accounts-header"><div><h2>平台成员</h2><p>成员登录本平台；管理员维护成员、账号分配和主体额度。</p></div><label className="field">搜索成员<input aria-label="搜索平台成员" placeholder="姓名或登录账号" value={memberSearch} onChange={e=>setMemberSearch(e.target.value)}/></label></div>
       <div className="table-wrap"><table className="management-table"><thead><tr><th>成员</th><th>平台角色</th><th>已分配社媒账号</th><th>成员状态</th><th>操作</th></tr></thead><tbody>{members.filter(m=>`${m.name} ${m.login}`.includes(memberSearch.trim())).map(m=><tr key={m.id}><td><strong>{m.name}{m.id===currentOperator && <span className="member-current">当前成员</span>}</strong><small>登录账号：{m.login}</small></td><td>{m.role}<small>{m.role==='管理员'?'管理成员、账号与额度':'执行任务、查看分配账号的私信'}</small></td><td><div className="assigned-account-tags">{accounts.filter(a=>a.assignedTo.includes(m.id)).map(a=><span key={a.id}>{a.platform} · {a.name}</span>)}{!accounts.some(a=>a.assignedTo.includes(m.id))&&<span>未分配</span>}</div></td><td><span className={`member-state ${m.enabled?'enabled':''}`}>{m.enabled?'启用':'停用'}</span></td><td><button className="button text" onClick={()=>{setMember({...m});setMemberError("");}}>编辑成员</button></td></tr>)}</tbody></table></div>
